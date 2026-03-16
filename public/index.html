@@ -236,6 +236,40 @@
         .sign-caption { text-align: left; font-size: 11pt; font-weight: bold; margin-bottom: 5px; }
         .sign-line { margin-top: 40px; margin-bottom: 5px; font-weight: normal; }
 
+        /* ====== LOGIN SCREEN ====== */
+        .login-screen {
+            position: fixed; inset: 0; z-index: 9999;
+            background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 50%, #1e3a5f 100%);
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--font-main);
+        }
+        .login-screen.hidden { display: none; }
+        .login-box {
+            background: white; border-radius: 12px; padding: 40px 36px; width: 380px; max-width: 90%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center;
+        }
+        .login-box .login-icon {
+            width: 70px; height: 70px; border-radius: 50%; margin: 0 auto 16px;
+            background: var(--accent); color: var(--primary-dark);
+            display: flex; align-items: center; justify-content: center; font-size: 2rem;
+        }
+        .login-box h1 { font-family: var(--font-head); font-size: 1.2rem; color: var(--primary); margin: 0 0 4px; }
+        .login-box .login-sub { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 24px; }
+        .login-box input {
+            width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+            font-size: 1.1rem; text-align: center; letter-spacing: 4px; font-family: var(--font-main);
+            margin-bottom: 16px;
+        }
+        .login-box input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,54,93,0.1); outline: none; }
+        .login-box .btn-login {
+            width: 100%; padding: 12px; border: none; border-radius: var(--radius);
+            background: var(--primary); color: white; font-size: 1rem; font-weight: 600;
+            cursor: pointer; font-family: var(--font-main); transition: 0.2s;
+        }
+        .login-box .btn-login:hover { background: var(--primary-light); }
+        .login-error { color: var(--danger); font-size: 0.85rem; margin-top: 10px; display: none; }
+        .login-footer { margin-top: 20px; font-size: 0.75rem; color: var(--text-muted); }
+
         /* ====== RESPONSIVE ====== */
         @media (max-width: 768px) {
             .sidebar { position: fixed; left: -100%; height: 100%; }
@@ -261,6 +295,20 @@
     </style>
 </head>
 <body>
+
+    <!-- ====== LOGIN SCREEN ====== -->
+    <div id="loginScreen" class="login-screen">
+        <div class="login-box">
+            <div class="login-icon"><i class="fas fa-landmark"></i></div>
+            <h1>ศูนย์พัฒนาเด็ก อบต.เขิน1</h1>
+            <div class="login-sub">ระบบบัญชีคุมวัสดุ อปท. (ว.1095)</div>
+            <input type="password" id="loginPassword" placeholder="ใส่รหัสผ่าน" maxlength="20"
+                   onkeydown="if(event.key==='Enter')doLogin()">
+            <button class="btn-login" onclick="doLogin()"><i class="fas fa-sign-in-alt"></i> เข้าสู่ระบบ</button>
+            <div id="loginError" class="login-error"><i class="fas fa-exclamation-circle"></i> <span></span></div>
+            <div class="login-footer">รหัสเริ่มต้น: 1234 (เปลี่ยนได้ภายหลัง)</div>
+        </div>
+    </div>
 
     <div id="loadingOverlay" class="loading-overlay"><div class="spinner"></div></div>
 
@@ -298,8 +346,14 @@
                 <i class="fas fa-upload"></i> นำเข้าข้อมูล
             </a>
             <input type="file" id="fileRestore" hidden onchange="restoreData(this)">
+            <a href="#" class="menu-item" onclick="openChangePwModal()">
+                <i class="fas fa-key"></i> เปลี่ยนรหัสผ่าน
+            </a>
             <a href="#" class="menu-item" onclick="resetData()" style="color: rgba(255,150,150,0.7);">
                 <i class="fas fa-trash"></i> ล้างข้อมูล
+            </a>
+            <a href="#" class="menu-item" onclick="doLogout()" style="color: rgba(255,200,150,0.7);">
+                <i class="fas fa-sign-out-alt"></i> ออกจากระบบ
             </a>
         </div>
     </nav>
@@ -499,7 +553,7 @@
                     <div class="form-row align-end">
                         <div class="form-group flex-2">
                             <label>หน่วยงาน (หัวรายงาน)</label>
-                            <input type="text" id="orgNameInput" value="องค์การบริหารส่วนตำบล..." onchange="updateOrgName()">
+                            <input type="text" id="orgNameInput" value="ศูนย์พัฒนาเด็กองค์การบริหารส่วนตำบลเขิน1" onchange="updateOrgName()">
                         </div>
                         <div class="form-group">
                             <label>ณ วันที่</label>
@@ -524,6 +578,34 @@
             </div>
         </section>
     </main>
+
+    <!-- ===== CHANGE PASSWORD MODAL ===== -->
+    <div id="changePwModal" class="modal">
+        <div class="modal-content" style="width:400px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-key" style="color:var(--accent);"></i> เปลี่ยนรหัสผ่าน</h3>
+                <span class="close" onclick="closeModal('changePwModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label>รหัสผ่านเดิม</label>
+                    <input type="password" id="pwOld" placeholder="ใส่รหัสเดิม">
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label>รหัสผ่านใหม่</label>
+                    <input type="password" id="pwNew" placeholder="ใส่รหัสใหม่ (อย่างน้อย 4 ตัว)">
+                </div>
+                <div class="form-group">
+                    <label>ยืนยันรหัสผ่านใหม่</label>
+                    <input type="password" id="pwConfirm" placeholder="ใส่รหัสใหม่อีกครั้ง">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('changePwModal')">ยกเลิก</button>
+                <button class="btn btn-success" onclick="doChangePassword()"><i class="fas fa-save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
 
     <!-- ===== MASTER MODAL ===== -->
     <div id="masterModal" class="modal">
@@ -575,6 +657,69 @@
         // ============================================================
         const API_BASE = '/api'; // เปลี่ยนเป็น URL เต็มถ้าใช้ cross-origin เช่น 'http://localhost:3000/api'
         let USE_SQL = true; // จะถูกตรวจสอบอัตโนมัติ
+
+        // ============================================================
+        // LOGIN / AUTH
+        // ============================================================
+        async function doLogin() {
+            const pwd = document.getElementById('loginPassword').value;
+            const errEl = document.getElementById('loginError');
+            if (!pwd) { errEl.style.display = 'block'; errEl.querySelector('span').textContent = 'กรุณาใส่รหัสผ่าน'; return; }
+            try {
+                const res = await fetch(`${API_BASE}/login`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ password: pwd }) });
+                const data = await res.json();
+                if (data.success) {
+                    sessionStorage.setItem('auth_token', data.token);
+                    sessionStorage.setItem('orgName', data.orgName || '');
+                    document.getElementById('loginScreen').classList.add('hidden');
+                    errEl.style.display = 'none';
+                    startApp();
+                } else {
+                    errEl.style.display = 'block';
+                    errEl.querySelector('span').textContent = data.error || 'รหัสผ่านไม่ถูกต้อง';
+                    document.getElementById('loginPassword').value = '';
+                    document.getElementById('loginPassword').focus();
+                }
+            } catch(e) {
+                errEl.style.display = 'block';
+                errEl.querySelector('span').textContent = 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์';
+            }
+        }
+
+        function doLogout() {
+            if (confirm('ต้องการออกจากระบบ?')) {
+                sessionStorage.removeItem('auth_token');
+                document.getElementById('loginScreen').classList.remove('hidden');
+                document.getElementById('loginPassword').value = '';
+                document.getElementById('loginPassword').focus();
+            }
+        }
+
+        function openChangePwModal() {
+            document.getElementById('pwOld').value = '';
+            document.getElementById('pwNew').value = '';
+            document.getElementById('pwConfirm').value = '';
+            document.getElementById('changePwModal').style.display = 'flex';
+        }
+
+        async function doChangePassword() {
+            const oldPw = document.getElementById('pwOld').value;
+            const newPw = document.getElementById('pwNew').value;
+            const confirmPw = document.getElementById('pwConfirm').value;
+            if (!oldPw || !newPw) return alert('กรุณากรอกข้อมูลให้ครบ');
+            if (newPw.length < 4) return alert('รหัสผ่านใหม่ต้องมีอย่างน้อย 4 ตัว');
+            if (newPw !== confirmPw) return alert('รหัสผ่านใหม่ไม่ตรงกัน');
+            try {
+                const res = await fetch(`${API_BASE}/change-password`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ oldPassword: oldPw, newPassword: newPw }) });
+                const data = await res.json();
+                if (data.success) {
+                    closeModal('changePwModal');
+                    showToast('เปลี่ยนรหัสผ่านสำเร็จ');
+                } else {
+                    alert(data.error || 'เปลี่ยนรหัสผ่านไม่สำเร็จ');
+                }
+            } catch(e) { alert('เกิดข้อผิดพลาด'); }
+        }
 
         const CATEGORIES = {
             'A0000': 'วัสดุสำนักงาน', 'B0000': 'วัสดุไฟฟ้าและวิทยุ', 'C0000': 'วัสดุงานบ้านงานครัว',
@@ -631,19 +776,28 @@
                     USE_SQL = true;
                     document.getElementById('dbBadge').textContent = 'SQL';
                     document.getElementById('dbBadge').className = 'db-badge sql';
-                } else {
-                    throw new Error('API not available');
-                }
+                } else { throw new Error('API not available'); }
             } catch (e) {
                 USE_SQL = false;
                 document.getElementById('dbBadge').textContent = 'LOCAL';
                 document.getElementById('dbBadge').className = 'db-badge local';
-                console.warn('⚠️ ไม่สามารถเชื่อมต่อ API ได้ ใช้ localStorage แทน');
             }
 
+            // ตรวจ session - ถ้ายังไม่ login ให้แสดงหน้า login
+            const token = sessionStorage.getItem('auth_token');
+            if (token) {
+                document.getElementById('loginScreen').classList.add('hidden');
+                startApp();
+            } else {
+                document.getElementById('loginScreen').classList.remove('hidden');
+                document.getElementById('loginPassword').focus();
+            }
+        };
+
+        async function startApp() {
             await initUI();
             await renderDashboard();
-        };
+        }
 
         async function initUI() {
             // Populate Category Dropdowns
