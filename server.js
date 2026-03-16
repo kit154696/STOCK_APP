@@ -10,6 +10,12 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
+const crypto = require('crypto');
+
+// ===== Password Hash Helper =====
+function hashPassword(pwd) {
+    return crypto.createHash('sha256').update(pwd).digest('hex');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,6 +61,14 @@ async function autoInit() {
             const cnt = await pool.query('SELECT COUNT(*) as cnt FROM items');
             console.log(`📦 ฐานข้อมูลพร้อม: ${cnt.rows[0].cnt} รายการวัสดุ`);
         }
+        // Seed default password if not exists
+        const pwCheck = await pool.query("SELECT value FROM settings WHERE key = 'password'");
+        if (pwCheck.rows.length === 0) {
+            await pool.query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING", ['password', hashPassword('1234')]);
+            console.log('🔑 ตั้งรหัสผ่านเริ่มต้น: 1234');
+        }
+        // Seed default orgName
+        await pool.query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING", ['orgName', 'ศูนย์พัฒนาเด็กองค์การบริหารส่วนตำบลเขิน1']);
     } catch (err) {
         console.error('❌ Auto-init error:', err.message);
     }
@@ -65,7 +79,7 @@ async function autoInit() {
 // ============================
 app.get('/api/settings', async (req, res) => {
     try {
-        const result = await query('SELECT key, value FROM settings');
+        const result = await query("SELECT key, value FROM settings WHERE key NOT IN ('password', 'auth_token')");
         const settings = {};
         result.rows.forEach(r => settings[r.key] = r.value);
         res.json({ success: true, data: settings });
@@ -83,6 +97,56 @@ app.put('/api/settings/:key', async (req, res) => {
             [key, value]
         );
         res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================
+// API: Login / Auth
+// ============================
+app.post('/api/login', async (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password) return res.status(400).json({ success: false, error: 'กรุณาใส่รหัสผ่าน' });
+        
+        const result = await query("SELECT value FROM settings WHERE key = 'password'");
+        const storedHash = result.rows.length > 0 ? result.rows[0].value : hashPassword('1234');
+        
+        if (hashPassword(password) === storedHash) {
+            // สร้าง token ง่ายๆ
+            const token = crypto.randomBytes(32).toString('hex');
+            // เก็บ token ใน settings (ง่ายสำหรับระบบเล็ก)
+            await query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", ['auth_token', token]);
+            
+            // ดึงชื่อหน่วยงาน
+            const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
+            const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
+            
+            res.json({ success: true, token, orgName });
+        } else {
+            res.status(401).json({ success: false, error: 'รหัสผ่านไม่ถูกต้อง' });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/change-password', async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+        if (!oldPassword || !newPassword) return res.status(400).json({ success: false, error: 'กรุณากรอกข้อมูลให้ครบ' });
+        if (newPassword.length < 4) return res.status(400).json({ success: false, error: 'รหัสผ่านต้องมีอย่างน้อย 4 ตัว' });
+        
+        const result = await query("SELECT value FROM settings WHERE key = 'password'");
+        const storedHash = result.rows.length > 0 ? result.rows[0].value : hashPassword('1234');
+        
+        if (hashPassword(oldPassword) !== storedHash) {
+            return res.status(401).json({ success: false, error: 'รหัสผ่านเดิมไม่ถูกต้อง' });
+        }
+        
+        await query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", ['password', hashPassword(newPassword)]);
+        res.json({ success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
