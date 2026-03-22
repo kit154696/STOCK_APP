@@ -55,6 +55,34 @@ function badRequest(res, errors) {
     return res.status(400).json({ success: false, error: errors.join(' | '), errors });
 }
 
+// ============================
+// AUDIT LOG
+// ============================
+/**
+ * บันทึก audit log — fire-and-forget (ไม่ block request)
+ * @param {object} opts
+ * @param {number|null} opts.userId
+ * @param {string}      opts.username
+ * @param {string}      opts.action     — เช่น 'LOGIN_SUCCESS'
+ * @param {string}      opts.resource   — เช่น 'items'
+ * @param {string|null} opts.resourceId
+ * @param {object|null} opts.details    — ข้อมูลเพิ่มเติม (jsonb)
+ * @param {string}      opts.ip
+ */
+function auditLog({ userId = null, username = '', action, resource = '', resourceId = null, details = null, ip = '' }) {
+    pool.query(
+        `INSERT INTO audit_logs (user_id, username, action, resource, resource_id, details, ip_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [userId, username, action, resource, resourceId ? String(resourceId) : null,
+         details ? JSON.stringify(details) : null, ip]
+    ).catch(err => console.error('⚠️ audit log error:', err.message));
+}
+
+/** ดึง IP จาก request (รองรับ Railway reverse proxy) */
+function getIp(req) {
+    return req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown';
+}
+
 // ===== Security Headers (Helmet) =====
 app.use(helmet({
     contentSecurityPolicy: {
@@ -153,11 +181,12 @@ app.use(session({
     secret: process.env.SESSION_SECRET || 'stock-aot-secret-2024-xK9pL',
     resave: false,
     saveUninitialized: false,
+    rolling: true,           // ต่ออายุ session ทุกครั้งที่มี request
     cookie: {
         httpOnly: true,
         sameSite: 'strict',
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 8 * 60 * 60 * 1000  // 8 ชั่วโมง
+        maxAge: 30 * 60 * 1000  // 30 นาที inactivity timeout
     }
 }));
 
@@ -195,15 +224,24 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 
         const user = result.rows[0];
         const match = await bcrypt.compare(password, user.password_hash);
-        if (!match)
+        if (!match) {
+            auditLog({ username: username.trim(), action: 'LOGIN_FAILED', resource: 'auth', ip: getIp(req) });
             return res.status(401).json({ success: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
+        }
 
-        req.session.user = { id: user.id, username: user.username, role: user.role };
-
-        const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
-        const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
-
-        res.json({ success: true, user: { username: user.username, role: user.role }, orgName });
+        // Regenerate session ID เพื่อป้องกัน session fixation attack
+        req.session.regenerate(async (err) => {
+            if (err) return res.status(500).json({ success: false, error: 'Session error' });
+            req.session.user = { id: user.id, username: user.username, role: user.role };
+            auditLog({ userId: user.id, username: user.username, action: 'LOGIN_SUCCESS', resource: 'auth', ip: getIp(req) });
+            try {
+                const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
+                const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
+                res.json({ success: true, user: { username: user.username, role: user.role }, orgName });
+            } catch (e) {
+                res.status(500).json({ success: false, error: e.message });
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -239,6 +277,7 @@ app.post('/api/change-password', async (req, res) => {
 
         const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
         await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.session.user.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'PASSWORD_CHANGE', resource: 'users', resourceId: req.session.user.id, ip: getIp(req) });
         res.json({ success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -267,6 +306,7 @@ app.post('/api/users', checkAdmin, async (req, res) => {
             'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
             [username, hash, role]
         );
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'USER_CREATE', resource: 'users', resourceId: result.rows[0].id, details: { newUsername: username, role }, ip: getIp(req) });
         res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
         if (err.code === '23505')
@@ -283,7 +323,7 @@ app.delete('/api/users/:id', checkAdmin, async (req, res) => {
         if (targetId === req.session.user.id)
             return res.status(400).json({ success: false, error: 'ไม่สามารถลบบัญชีตัวเองได้' });
 
-        const targetUser = await query('SELECT role FROM users WHERE id = $1', [targetId]);
+        const targetUser = await query('SELECT role, username FROM users WHERE id = $1', [targetId]);
         if (!targetUser.rows.length)
             return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้' });
 
@@ -293,7 +333,9 @@ app.delete('/api/users/:id', checkAdmin, async (req, res) => {
                 return res.status(400).json({ success: false, error: 'ต้องมีผู้ดูแลระบบอย่างน้อย 1 คน' });
         }
 
+        const deletedUsername = targetUser.rows[0].username || '';
         await query('DELETE FROM users WHERE id = $1', [targetId]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'USER_DELETE', resource: 'users', resourceId: targetId, details: { deletedUsername }, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -308,6 +350,7 @@ app.put('/api/users/:id/password', checkAdmin, async (req, res) => {
     try {
         const hash = await bcrypt.hash(vPw.cleaned.newPassword, BCRYPT_ROUNDS);
         await query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.params.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'PASSWORD_CHANGE', resource: 'users', resourceId: req.params.id, details: { changedBy: req.session.user.username }, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -336,6 +379,7 @@ app.put('/api/settings/:key', async (req, res) => {
             `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
             [req.params.key, v.cleaned.value]
         );
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'SETTINGS_UPDATE', resource: 'settings', resourceId: req.params.key, details: { key: req.params.key, value: v.cleaned.value }, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -414,6 +458,7 @@ app.post('/api/items', async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
             [code, name, spec || '-', cat_code, cat_name, unit, min_qty, location, last_price]
         );
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ITEM_CREATE', resource: 'items', resourceId: result.rows[0].id, details: { code, name }, ip: getIp(req) });
         res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
         if (err.code === '23505')
@@ -434,6 +479,7 @@ app.put('/api/items/:id', async (req, res) => {
              WHERE id=$10`,
             [code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price, req.params.id]
         );
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ITEM_UPDATE', resource: 'items', resourceId: req.params.id, details: { code, name }, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -448,6 +494,7 @@ app.delete('/api/items/:id', async (req, res) => {
         if (parseInt(used.rows[0].cnt) > 0)
             return res.status(400).json({ success: false, error: 'ไม่สามารถลบได้ มีรายการเอกสารอ้างอิง' });
         await query('DELETE FROM items WHERE id = $1', [req.params.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ITEM_DELETE', resource: 'items', resourceId: req.params.id, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -563,6 +610,7 @@ app.post('/api/transactions', async (req, res) => {
             }
         }
         await client.query('COMMIT');
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'TRANSACTION_CREATE', resource: 'transactions', resourceId: txId, details: { type, doc_no, lineCount: lines.length }, ip: getIp(req) });
         res.json({ success: true, id: txId });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -578,6 +626,7 @@ app.delete('/api/transactions/:id', async (req, res) => {
     try {
         await query('DELETE FROM transaction_lines WHERE tx_id = $1', [req.params.id]);
         await query('DELETE FROM transactions WHERE id = $1', [req.params.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'TRANSACTION_DELETE', resource: 'transactions', resourceId: req.params.id, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -732,17 +781,16 @@ app.get('/api/backup', checkAdmin, async (req, res) => {
             query('SELECT * FROM transactions'),
             query('SELECT * FROM transaction_lines')
         ]);
-        res.json({
-            success: true,
-            data: {
-                settings: settings.rows,
-                items: items.rows,
-                transactions: transactions.rows,
-                transaction_lines: txLines.rows,
-                exportDate: new Date().toISOString(),
-                version: 'PG_V1'
-            }
-        });
+        const payload = {
+            settings: settings.rows,
+            items: items.rows,
+            transactions: transactions.rows,
+            transaction_lines: txLines.rows,
+            exportDate: new Date().toISOString(),
+            version: 'PG_V1'
+        };
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_BACKUP', resource: 'backup', details: { itemCount: items.rows.length, txCount: transactions.rows.length }, ip: getIp(req) });
+        res.json({ success: true, data: payload });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -754,6 +802,22 @@ app.post('/api/restore', checkAdmin, async (req, res) => {
     const client = await pool.connect();
     try {
         const { data } = req.body;
+
+        // Auto-backup ข้อมูลปัจจุบันก่อน restore
+        const [bkSettings, bkItems, bkTx, bkLines] = await Promise.all([
+            query('SELECT * FROM settings'),
+            query('SELECT * FROM items'),
+            query('SELECT * FROM transactions'),
+            query('SELECT * FROM transaction_lines'),
+        ]);
+        const autoBackup = {
+            settings: bkSettings.rows,
+            items: bkItems.rows,
+            transactions: bkTx.rows,
+            transaction_lines: bkLines.rows,
+            exportDate: new Date().toISOString(),
+            version: 'PG_V1',
+        };
 
         await client.query('BEGIN');
         await client.query('DELETE FROM transaction_lines');
@@ -792,7 +856,8 @@ app.post('/api/restore', checkAdmin, async (req, res) => {
         await client.query(`SELECT setval('transaction_lines_id_seq', (SELECT COALESCE(MAX(id),0) FROM transaction_lines))`);
 
         await client.query('COMMIT');
-        res.json({ success: true, message: 'นำเข้าข้อมูลสำเร็จ' });
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESTORE', resource: 'restore', details: { version: data.version, itemCount: data.items.length }, ip: getIp(req) });
+        res.json({ success: true, message: 'นำเข้าข้อมูลสำเร็จ', autoBackup });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: err.message });
@@ -801,14 +866,58 @@ app.post('/api/restore', checkAdmin, async (req, res) => {
     }
 });
 
+// ============================
+// API: Audit Logs (Admin only)
+// ============================
+app.get('/api/audit-logs', checkAdmin, async (req, res) => {
+    try {
+        const page   = Math.max(1, parseInt(req.query.page  || '1'));
+        const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit || '50')));
+        const offset = (page - 1) * limit;
+        const action = req.query.action ? String(req.query.action).trim() : '';
+        const dateFrom = req.query.dateFrom || '';
+        const dateTo   = req.query.dateTo   || '';
+
+        const params = [];
+        let where = 'WHERE 1=1';
+        let idx = 1;
+        if (action) { where += ` AND action = $${idx++}`; params.push(action); }
+        if (dateFrom) { where += ` AND timestamp >= $${idx++}`; params.push(dateFrom); }
+        if (dateTo)   { where += ` AND timestamp <= $${idx++}`; params.push(dateTo + 'T23:59:59'); }
+
+        const countRes = await query(`SELECT COUNT(*) as cnt FROM audit_logs ${where}`, params);
+        const total = parseInt(countRes.rows[0].cnt);
+
+        const rows = await query(
+            `SELECT * FROM audit_logs ${where} ORDER BY timestamp DESC LIMIT $${idx++} OFFSET $${idx++}`,
+            [...params, limit, offset]
+        );
+
+        res.json({ success: true, data: rows.rows, total, page, limit, pages: Math.ceil(total / limit) });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.post('/api/reset', checkAdmin, async (req, res) => {
+    if (req.body.confirm_text !== 'ยืนยันการลบ')
+        return res.status(400).json({ success: false, error: 'กรุณาพิมพ์ "ยืนยันการลบ" เพื่อยืนยันการดำเนินการ' });
     try {
         await query('DELETE FROM transaction_lines');
         await query('DELETE FROM transactions');
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESET', resource: 'transactions', ip: getIp(req) });
         res.json({ success: true, message: 'ล้างเอกสารทั้งหมดสำเร็จ' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+// ============================
+// API: Keep-Alive (ต่ออายุ session)
+// ============================
+app.post('/api/keep-alive', (req, res) => {
+    // checkAuth ได้รันแล้วจาก middleware; เรียก request นี้ก็เพียงพอสำหรับ rolling session
+    res.json({ success: true, expiresIn: 30 * 60 * 1000 });
 });
 
 // ============================
@@ -856,6 +965,24 @@ async function autoInit() {
             );
             console.log('🔑 สร้างผู้ใช้เริ่มต้น: admin/admin123, user/user123');
         }
+
+        // ตรวจและสร้างตาราง audit_logs ถ้ายังไม่มี (upgrade เซิร์ฟเวอร์เก่า)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+                user_id INTEGER,
+                username TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                resource TEXT NOT NULL DEFAULT '',
+                resource_id TEXT,
+                details JSONB,
+                ip_address TEXT
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id)');
 
         // Seed default orgName
         await pool.query(

@@ -144,12 +144,27 @@ async function initDB() {
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+                user_id INTEGER,
+                username TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                resource TEXT NOT NULL DEFAULT '',
+                resource_id TEXT,
+                details JSONB,
+                ip_address TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_items_code ON items(code);
             CREATE INDEX IF NOT EXISTS idx_items_cat ON items(cat_code);
             CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
             CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(type);
             CREATE INDEX IF NOT EXISTS idx_txlines_txid ON transaction_lines(tx_id);
             CREATE INDEX IF NOT EXISTS idx_txlines_itemid ON transaction_lines(item_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
         `);
         console.log('✅ สร้างตารางสำเร็จ');
 
