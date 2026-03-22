@@ -885,6 +885,18 @@ app.get('/api/auto-backups', checkAdmin, async (req, res) => {
     }
 });
 
+app.get('/api/auto-backups/:id/download', checkAdmin, async (req, res) => {
+    const { id } = req.params;
+    if (!isPositiveInt(id)) return res.status(400).json({ success: false, error: 'ID ไม่ถูกต้อง' });
+    try {
+        const row = await pool.query('SELECT data, created_at FROM auto_backups WHERE id = $1', [id]);
+        if (row.rows.length === 0) return res.status(404).json({ success: false, error: 'ไม่พบ backup นี้' });
+        res.json({ success: true, data: row.rows[0].data });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.post('/api/auto-backups/:id/restore', checkAdmin, async (req, res) => {
     const { id } = req.params;
     if (!isPositiveInt(id)) return res.status(400).json({ success: false, error: 'ID ไม่ถูกต้อง' });

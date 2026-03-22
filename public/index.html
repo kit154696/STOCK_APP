@@ -315,6 +315,9 @@
             <a href="/security-test" target="_blank" class="menu-item admin-only" id="menuSecurityTest" style="display:none;">
                 <i class="fas fa-shield-alt"></i> ทดสอบความปลอดภัย
             </a>
+            <a href="#" class="menu-item admin-only" id="menuAutoBackup" onclick="nav('autobackup', this)" style="display:none;">
+                <i class="fas fa-cloud-upload-alt"></i> Auto Backup
+            </a>
             <a href="#" class="menu-item admin-only" id="menuBackup" onclick="backupData()" style="display:none;">
                 <i class="fas fa-download"></i> สำรองข้อมูล
             </a>
@@ -649,6 +652,27 @@
             </div>
         </section>
 
+        <!-- ===== AUTO BACKUP ===== -->
+        <section id="autobackup" class="page-section">
+            <div class="card">
+                <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+                    <h3><i class="fas fa-cloud-upload-alt"></i> Auto Backup (7 วันล่าสุด)</h3>
+                    <button class="btn btn-secondary" onclick="renderAutoBackups()">
+                        <i class="fas fa-sync-alt"></i> รีเฟรช
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; padding:12px 16px; margin-bottom:20px; display:flex; align-items:flex-start; gap:10px;">
+                        <i class="fas fa-info-circle" style="color:#1d4ed8; font-size:1rem; margin-top:2px; flex-shrink:0;"></i>
+                        <span style="color:#1e40af; font-size:0.88rem;">
+                            ระบบสำรองข้อมูลอัตโนมัติทุก <strong>24 ชั่วโมง</strong> และเก็บไว้ <strong>7 รายการ</strong>ล่าสุด
+                        </span>
+                    </div>
+                    <div id="autoBackupList"></div>
+                </div>
+            </div>
+        </section>
+
         <!-- ===== RATE LIMIT SETTINGS ===== -->
         <section id="ratelimit" class="page-section">
             <div class="card">
@@ -806,6 +830,29 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('restorePreviewModal'); document.getElementById('fileRestore').value='';">ยกเลิก</button>
                 <button class="btn btn-success" id="restoreConfirmBtn" onclick="doRestoreConfirmed()"><i class="fas fa-check"></i> ยืนยัน Import</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== AUTO BACKUP RESTORE CONFIRM MODAL ===== -->
+    <div id="autoBackupRestoreModal" class="modal">
+        <div class="modal-content" style="width:480px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-history" style="color:var(--accent);"></i> ยืนยันกู้คืนข้อมูล</h3>
+                <span class="close" onclick="closeModal('autoBackupRestoreModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="autoBackupRestoreInfo" style="margin-bottom:16px;"></div>
+                <div style="background:#fef2f2; border:1px solid #fca5a5; border-radius:6px; padding:12px 14px; display:flex; align-items:flex-start; gap:8px;">
+                    <i class="fas fa-exclamation-triangle" style="color:#b91c1c; font-size:0.95rem; margin-top:2px; flex-shrink:0;"></i>
+                    <span style="color:#7f1d1d; font-size:0.88rem;">ข้อมูลปัจจุบัน<strong>ทั้งหมดจะถูกแทนที่</strong> ระบบจะดาวน์โหลด snapshot ก่อนกู้คืนให้อัตโนมัติ</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('autoBackupRestoreModal')">ยกเลิก</button>
+                <button class="btn btn-danger" id="autoBackupRestoreBtn" onclick="doAutoBackupRestore()">
+                    <i class="fas fa-history"></i> ยืนยันกู้คืน
+                </button>
             </div>
         </div>
     </div>
@@ -1086,6 +1133,7 @@
             if (pageId === 'users') renderUsers();
             if (pageId === 'auditlog') renderAuditLog(1);
             if (pageId === 'ratelimit') renderRateLimit();
+            if (pageId === 'autobackup') renderAutoBackups();
         }
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
@@ -2002,6 +2050,136 @@
             login:   { label: 'เข้าสู่ระบบ',   desc: 'จำกัดการ login (ป้องกัน brute force)' },
             write:   { label: 'เขียนข้อมูล',   desc: 'จำกัด POST / PUT / DELETE' },
         };
+
+        // ============================================================
+        // AUTO BACKUP
+        // ============================================================
+        let pendingAutoRestoreId = null;
+
+        async function renderAutoBackups() {
+            const container = document.getElementById('autoBackupList');
+            container.innerHTML = '<p style="color:var(--text-muted);padding:12px 0;"><i class="fas fa-spinner fa-spin"></i> กำลังโหลด...</p>';
+            try {
+                const data = await api('/auto-backups');
+                if (!data.backups || data.backups.length === 0) {
+                    container.innerHTML = `
+                        <div style="text-align:center; padding:32px 16px; color:var(--text-muted);">
+                            <i class="fas fa-cloud" style="font-size:2.5rem; margin-bottom:12px; display:block; opacity:0.3;"></i>
+                            ยังไม่มี Auto Backup — ระบบจะสร้างอัตโนมัติทุก 24 ชั่วโมง
+                        </div>`;
+                    return;
+                }
+                const rows = data.backups.map((b, i) => {
+                    const dt = new Date(b.created_at);
+                    const dateStr = dt.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+                    const timeStr = dt.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                    const isLatest = i === 0;
+                    return `
+                    <tr>
+                        <td style="font-size:0.85rem; color:var(--text-muted); white-space:nowrap;">#${b.id}</td>
+                        <td>
+                            <div style="font-weight:600;">${dateStr}</div>
+                            <div style="font-size:0.82rem; color:var(--text-muted);">${timeStr} น.</div>
+                        </td>
+                        <td class="text-center">
+                            <span style="background:#eff6ff; color:#1e40af; padding:2px 10px; border-radius:99px; font-size:0.82rem; font-weight:600;">
+                                ${Number(b.item_count).toLocaleString()} รายการ
+                            </span>
+                        </td>
+                        <td class="text-center">
+                            <span style="background:#f0fdf4; color:#166534; padding:2px 10px; border-radius:99px; font-size:0.82rem; font-weight:600;">
+                                ${Number(b.tx_count).toLocaleString()} เอกสาร
+                            </span>
+                        </td>
+                        <td class="text-center" style="white-space:nowrap;">
+                            ${isLatest ? '<span style="background:#fef9c3; color:#713f12; padding:2px 8px; border-radius:99px; font-size:0.75rem; margin-right:6px;">ล่าสุด</span>' : ''}
+                            <button class="btn btn-sm btn-secondary" onclick="downloadAutoBackup(${b.id})" title="ดาวน์โหลด">
+                                <i class="fas fa-download"></i>
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="confirmAutoRestore(${b.id}, '${dateStr} ${timeStr}', ${b.item_count}, ${b.tx_count})" title="กู้คืน" style="margin-left:4px;">
+                                <i class="fas fa-history"></i> กู้คืน
+                            </button>
+                        </td>
+                    </tr>`;
+                }).join('');
+                container.innerHTML = `
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead><tr>
+                                <th style="width:60px;">#</th>
+                                <th>วันที่ Backup</th>
+                                <th class="text-center">วัสดุ</th>
+                                <th class="text-center">เอกสาร</th>
+                                <th class="text-center">จัดการ</th>
+                            </tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>`;
+            } catch (e) {
+                container.innerHTML = `<p style="color:var(--danger);">เกิดข้อผิดพลาด: ${e.message}</p>`;
+            }
+        }
+
+        async function downloadAutoBackup(id) {
+            try {
+                const data = await api(`/auto-backups`);
+                const bk = data.backups.find(b => b.id === id);
+                // ดึงข้อมูลเต็มจาก restore endpoint แบบ dry-run ไม่ได้ — ต้องเพิ่ม GET endpoint
+                // ใช้วิธีง่ายกว่า: เรียก API พิเศษ
+                const full = await api(`/auto-backups/${id}/download`);
+                const blob = new Blob([JSON.stringify(full.data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const dt = bk ? new Date(bk.created_at).toISOString().slice(0, 16).replace('T', '_').replace(':', '') : id;
+                a.download = `auto-backup-${dt}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('ดาวน์โหลดไม่สำเร็จ: ' + e.message);
+            }
+        }
+
+        function confirmAutoRestore(id, dateLabel, itemCount, txCount) {
+            pendingAutoRestoreId = id;
+            document.getElementById('autoBackupRestoreInfo').innerHTML = `
+                <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+                    <tr><td style="padding:6px 0; color:var(--text-muted); width:130px;">วันที่ Backup</td><td style="font-weight:600;">${dateLabel} น.</td></tr>
+                    <tr><td style="padding:6px 0; color:var(--text-muted);">จำนวนวัสดุ</td><td style="font-weight:600;">${Number(itemCount).toLocaleString()} รายการ</td></tr>
+                    <tr><td style="padding:6px 0; color:var(--text-muted);">จำนวนเอกสาร</td><td style="font-weight:600;">${Number(txCount).toLocaleString()} เอกสาร</td></tr>
+                </table>`;
+            document.getElementById('autoBackupRestoreModal').style.display = 'flex';
+        }
+
+        async function doAutoBackupRestore() {
+            if (!pendingAutoRestoreId) return;
+            const btn = document.getElementById('autoBackupRestoreBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> กำลังกู้คืน...';
+            try {
+                const data = await api(`/auto-backups/${pendingAutoRestoreId}/restore`, { method: 'POST' });
+                // ดาวน์โหลด snapshot อัตโนมัติ
+                if (data.autoBackup) {
+                    const blob = new Blob([JSON.stringify(data.autoBackup, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `pre-restore-snapshot-${new Date().toISOString().slice(0,16).replace(/:/g,'')}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+                closeModal('autoBackupRestoreModal');
+                showToast('กู้คืนข้อมูลสำเร็จ');
+                renderAutoBackups();
+                renderDashboard();
+            } catch (e) {
+                alert('กู้คืนไม่สำเร็จ: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-history"></i> ยืนยันกู้คืน';
+                pendingAutoRestoreId = null;
+            }
+        }
 
         async function renderRateLimit() {
             const container = document.getElementById('rateLimitList');
