@@ -230,19 +230,12 @@ app.post('/api/login', loginLimiter, async (req, res) => {
             return res.status(401).json({ success: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
         }
 
-        // Regenerate session ID เพื่อป้องกัน session fixation attack
-        req.session.regenerate(async (err) => {
-            if (err) return res.status(500).json({ success: false, error: 'Session error' });
-            req.session.user = { id: user.id, username: user.username, role: user.role };
-            auditLog({ userId: user.id, username: user.username, action: 'LOGIN_SUCCESS', resource: 'auth', ip: getIp(req) });
-            try {
-                const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
-                const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
-                res.json({ success: true, user: { username: user.username, role: user.role }, orgName });
-            } catch (e) {
-                res.status(500).json({ success: false, error: e.message });
-            }
-        });
+        req.session.user = { id: user.id, username: user.username, role: user.role };
+        auditLog({ userId: user.id, username: user.username, action: 'LOGIN_SUCCESS', resource: 'auth', ip: getIp(req) });
+
+        const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
+        const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
+        res.json({ success: true, user: { username: user.username, role: user.role }, orgName });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
