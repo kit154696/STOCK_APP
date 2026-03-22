@@ -136,6 +136,14 @@ async function initDB() {
                 price REAL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin','user')),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
             CREATE INDEX IF NOT EXISTS idx_items_code ON items(code);
             CREATE INDEX IF NOT EXISTS idx_items_cat ON items(cat_code);
             CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);

@@ -238,38 +238,7 @@
         .sign-line { margin-top: 40px; margin-bottom: 5px; font-weight: normal; }
 
         /* ====== LOGIN SCREEN ====== */
-        .login-screen {
-            position: fixed; inset: 0; z-index: 9999;
-            background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 50%, #1e3a5f 100%);
-            display: flex; align-items: center; justify-content: center;
-            font-family: var(--font-main);
-        }
-        .login-screen.hidden { display: none; }
-        .login-box {
-            background: white; border-radius: 12px; padding: 40px 36px; width: 380px; max-width: 90%;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center;
-        }
-        .login-box .login-icon {
-            width: 70px; height: 70px; border-radius: 50%; margin: 0 auto 16px;
-            background: var(--accent); color: var(--primary-dark);
-            display: flex; align-items: center; justify-content: center; font-size: 2rem;
-        }
-        .login-box h1 { font-family: var(--font-head); font-size: 1.2rem; color: var(--primary); margin: 0 0 4px; }
-        .login-box .login-sub { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 24px; }
-        .login-box input {
-            width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
-            font-size: 1.1rem; text-align: center; letter-spacing: 4px; font-family: var(--font-main);
-            margin-bottom: 16px;
-        }
-        .login-box input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,54,93,0.1); outline: none; }
-        .login-box .btn-login {
-            width: 100%; padding: 12px; border: none; border-radius: var(--radius);
-            background: var(--primary); color: white; font-size: 1rem; font-weight: 600;
-            cursor: pointer; font-family: var(--font-main); transition: 0.2s;
-        }
-        .login-box .btn-login:hover { background: var(--primary-light); }
-        .login-error { color: var(--danger); font-size: 0.85rem; margin-top: 10px; display: none; }
-        .login-footer { margin-top: 20px; font-size: 0.75rem; color: var(--text-muted); }
+        /* login CSS ย้ายไป login.html แล้ว */
 
         /* ====== RESPONSIVE ====== */
         @media (max-width: 768px) {
@@ -296,20 +265,6 @@
     </style>
 </head>
 <body>
-
-    <!-- ====== LOGIN SCREEN ====== -->
-    <div id="loginScreen" class="login-screen">
-        <div class="login-box">
-            <div class="login-icon"><i class="fas fa-landmark"></i></div>
-            <h1>ศูนย์พัฒนาเด็ก อบต.เขิน1</h1>
-            <div class="login-sub">ระบบบัญชีคุมวัสดุ อปท. (ว.1095)</div>
-            <input type="password" id="loginPassword" placeholder="ใส่รหัสผ่าน" maxlength="20"
-                   onkeydown="if(event.key==='Enter')doLogin()">
-            <button class="btn-login" onclick="doLogin()"><i class="fas fa-sign-in-alt"></i> เข้าสู่ระบบ</button>
-            <div id="loginError" class="login-error"><i class="fas fa-exclamation-circle"></i> <span></span></div>
-            <div class="login-footer">รหัสเริ่มต้น: 1234 (เปลี่ยนได้ภายหลัง)</div>
-        </div>
-    </div>
 
     <div id="loadingOverlay" class="loading-overlay"><div class="spinner"></div></div>
 
@@ -340,17 +295,20 @@
         </div>
         <div class="footer-menu">
             <div class="menu-section">จัดการข้อมูล</div>
-            <a href="#" class="menu-item" onclick="backupData()">
+            <a href="#" class="menu-item admin-only" id="menuUsers" onclick="nav('users', this)" style="display:none;">
+                <i class="fas fa-users"></i> จัดการผู้ใช้
+            </a>
+            <a href="#" class="menu-item admin-only" id="menuBackup" onclick="backupData()" style="display:none;">
                 <i class="fas fa-download"></i> สำรองข้อมูล
             </a>
-            <a href="#" class="menu-item" onclick="document.getElementById('fileRestore').click()">
+            <a href="#" class="menu-item admin-only" id="menuRestore" onclick="document.getElementById('fileRestore').click()" style="display:none;">
                 <i class="fas fa-upload"></i> นำเข้าข้อมูล
             </a>
             <input type="file" id="fileRestore" hidden onchange="restoreData(this)">
             <a href="#" class="menu-item" onclick="openChangePwModal()">
                 <i class="fas fa-key"></i> เปลี่ยนรหัสผ่าน
             </a>
-            <a href="#" class="menu-item" onclick="resetData()" style="color: rgba(255,150,150,0.7);">
+            <a href="#" class="menu-item admin-only" id="menuReset" onclick="resetData()" style="display:none; color: rgba(255,150,150,0.7);">
                 <i class="fas fa-trash"></i> ล้างข้อมูล
             </a>
             <a href="#" class="menu-item" onclick="doLogout()" style="color: rgba(255,200,150,0.7);">
@@ -365,7 +323,10 @@
             <button id="btnMenu" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
             <h2><i class="fas fa-circle" style="font-size:6px;"></i> <span id="pageTitle">แดชบอร์ด</span></h2>
             <div class="user-info">
-                <span>เจ้าหน้าที่พัสดุ</span>
+                <div style="text-align:right; line-height:1.3;">
+                    <span id="headerUsername" style="font-weight:600;"></span>
+                    <span id="headerRoleBadge" style="font-size:0.72rem; padding:2px 7px; border-radius:10px; margin-left:6px; vertical-align:middle;"></span>
+                </div>
                 <div class="avatar"><i class="fas fa-user"></i></div>
             </div>
         </header>
@@ -578,6 +539,30 @@
                 </div>
             </div>
         </section>
+
+        <!-- ===== USERS MANAGEMENT ===== -->
+        <section id="users" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-users"></i> จัดการผู้ใช้งาน</h3>
+                    <button class="btn btn-primary" onclick="openAddUserModal()"><i class="fas fa-user-plus"></i> เพิ่มผู้ใช้</button>
+                </div>
+                <div class="card-body table-responsive">
+                    <table class="table table-striped table-hover" id="usersTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>ชื่อผู้ใช้</th>
+                                <th>สิทธิ์</th>
+                                <th>วันที่สร้าง</th>
+                                <th class="text-center">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
     </main>
 
     <!-- ===== CHANGE PASSWORD MODAL ===== -->
@@ -604,6 +589,61 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('changePwModal')">ยกเลิก</button>
                 <button class="btn btn-success" onclick="doChangePassword()"><i class="fas fa-save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== ADD USER MODAL ===== -->
+    <div id="addUserModal" class="modal">
+        <div class="modal-content" style="width:420px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-user-plus" style="color:var(--accent);"></i> เพิ่มผู้ใช้งาน</h3>
+                <span class="close" onclick="closeModal('addUserModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label>ชื่อผู้ใช้</label>
+                    <input type="text" id="newUsername" placeholder="ระบุชื่อผู้ใช้ (ภาษาอังกฤษ/ตัวเลข)">
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label>รหัสผ่าน</label>
+                    <input type="password" id="newUserPw" placeholder="อย่างน้อย 6 ตัวอักษร">
+                </div>
+                <div class="form-group">
+                    <label>สิทธิ์</label>
+                    <select id="newUserRole">
+                        <option value="user">user — เจ้าหน้าที่ทั่วไป</option>
+                        <option value="admin">admin — ผู้ดูแลระบบ</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('addUserModal')">ยกเลิก</button>
+                <button class="btn btn-success" onclick="saveNewUser()"><i class="fas fa-save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== CHANGE USER PASSWORD MODAL (admin) ===== -->
+    <div id="changeUserPwModal" class="modal">
+        <div class="modal-content" style="width:380px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-key" style="color:var(--accent);"></i> ตั้งรหัสผ่านใหม่</h3>
+                <span class="close" onclick="closeModal('changeUserPwModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="changeUserPwId">
+                <p style="color:var(--text-muted); margin-bottom:14px; font-size:0.9rem;">
+                    ผู้ใช้: <strong id="changeUserPwName"></strong>
+                </p>
+                <div class="form-group">
+                    <label>รหัสผ่านใหม่</label>
+                    <input type="password" id="changeUserPwNew" placeholder="อย่างน้อย 6 ตัวอักษร">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('changeUserPwModal')">ยกเลิก</button>
+                <button class="btn btn-success" onclick="doChangeUserPw()"><i class="fas fa-save"></i> บันทึก</button>
             </div>
         </div>
     </div>
@@ -660,40 +700,16 @@
         let USE_SQL = true; // จะถูกตรวจสอบอัตโนมัติ
 
         // ============================================================
-        // LOGIN / AUTH
+        // AUTH
         // ============================================================
-        async function doLogin() {
-            const pwd = document.getElementById('loginPassword').value;
-            const errEl = document.getElementById('loginError');
-            if (!pwd) { errEl.style.display = 'block'; errEl.querySelector('span').textContent = 'กรุณาใส่รหัสผ่าน'; return; }
-            try {
-                const res = await fetch(`${API_BASE}/login`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ password: pwd }) });
-                const data = await res.json();
-                if (data.success) {
-                    sessionStorage.setItem('auth_token', data.token);
-                    sessionStorage.setItem('orgName', data.orgName || '');
-                    document.getElementById('loginScreen').classList.add('hidden');
-                    errEl.style.display = 'none';
-                    startApp();
-                } else {
-                    errEl.style.display = 'block';
-                    errEl.querySelector('span').textContent = data.error || 'รหัสผ่านไม่ถูกต้อง';
-                    document.getElementById('loginPassword').value = '';
-                    document.getElementById('loginPassword').focus();
-                }
-            } catch(e) {
-                errEl.style.display = 'block';
-                errEl.querySelector('span').textContent = 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์';
-            }
-        }
+        let currentUser = null; // { id, username, role }
 
-        function doLogout() {
-            if (confirm('ต้องการออกจากระบบ?')) {
-                sessionStorage.removeItem('auth_token');
-                document.getElementById('loginScreen').classList.remove('hidden');
-                document.getElementById('loginPassword').value = '';
-                document.getElementById('loginPassword').focus();
-            }
+        async function doLogout() {
+            if (!confirm('ต้องการออกจากระบบ?')) return;
+            try {
+                await fetch(`${API_BASE}/logout`, { method: 'POST', credentials: 'same-origin' });
+            } catch(e) {}
+            window.location.href = '/login.html';
         }
 
         function openChangePwModal() {
@@ -708,18 +724,13 @@
             const newPw = document.getElementById('pwNew').value;
             const confirmPw = document.getElementById('pwConfirm').value;
             if (!oldPw || !newPw) return alert('กรุณากรอกข้อมูลให้ครบ');
-            if (newPw.length < 4) return alert('รหัสผ่านใหม่ต้องมีอย่างน้อย 4 ตัว');
+            if (newPw.length < 6) return alert('รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร');
             if (newPw !== confirmPw) return alert('รหัสผ่านใหม่ไม่ตรงกัน');
             try {
-                const res = await fetch(`${API_BASE}/change-password`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ oldPassword: oldPw, newPassword: newPw }) });
-                const data = await res.json();
-                if (data.success) {
-                    closeModal('changePwModal');
-                    showToast('เปลี่ยนรหัสผ่านสำเร็จ');
-                } else {
-                    alert(data.error || 'เปลี่ยนรหัสผ่านไม่สำเร็จ');
-                }
-            } catch(e) { alert('เกิดข้อผิดพลาด'); }
+                const data = await api('/change-password', { method: 'POST', body: { oldPassword: oldPw, newPassword: newPw } });
+                closeModal('changePwModal');
+                showToast('เปลี่ยนรหัสผ่านสำเร็จ');
+            } catch(e) { alert(e.message || 'เปลี่ยนรหัสผ่านไม่สำเร็จ'); }
         }
 
         const CATEGORIES = {
@@ -751,14 +762,19 @@
             try {
                 const res = await fetch(`${API_BASE}${endpoint}`, {
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
                     ...options,
                     body: options.body ? JSON.stringify(options.body) : undefined
                 });
+                if (res.status === 401) {
+                    window.location.href = '/login.html';
+                    return;
+                }
                 const data = await res.json();
                 if (!data.success) throw new Error(data.error || 'API Error');
                 return data;
             } catch (err) {
-                console.error(`API Error [${endpoint}]:`, err);
+                if (!err.message?.includes('login')) console.error(`API Error [${endpoint}]:`, err);
                 throw err;
             }
         }
@@ -770,32 +786,47 @@
         // INIT (แก้ไขจาก sync เป็น async)
         // ============================================================
         window.onload = async () => {
-            // ตรวจสอบว่าเชื่อมต่อ API ได้ไหม
+            // ตรวจสอบ session ผ่าน /api/me
             try {
-                const res = await fetch(`${API_BASE}/settings`);
-                if (res.ok) {
-                    USE_SQL = true;
-                    document.getElementById('dbBadge').textContent = 'SQL';
-                    document.getElementById('dbBadge').className = 'db-badge sql';
-                } else { throw new Error('API not available'); }
+                const res = await fetch(`${API_BASE}/me`, { credentials: 'same-origin' });
+                if (res.status === 401) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                const data = await res.json();
+                if (!data.success) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                currentUser = data.user;
+                USE_SQL = true;
+                document.getElementById('dbBadge').textContent = 'SQL';
+                document.getElementById('dbBadge').className = 'db-badge sql';
             } catch (e) {
-                USE_SQL = false;
-                document.getElementById('dbBadge').textContent = 'LOCAL';
-                document.getElementById('dbBadge').className = 'db-badge local';
+                window.location.href = '/login.html';
+                return;
             }
 
-            // ตรวจ session - ถ้ายังไม่ login ให้แสดงหน้า login
-            const token = sessionStorage.getItem('auth_token');
-            if (token) {
-                document.getElementById('loginScreen').classList.add('hidden');
-                startApp();
-            } else {
-                document.getElementById('loginScreen').classList.remove('hidden');
-                document.getElementById('loginPassword').focus();
-            }
+            startApp();
         };
 
         async function startApp() {
+            // แสดงข้อมูลผู้ใช้ใน header
+            if (currentUser) {
+                document.getElementById('headerUsername').textContent = currentUser.username;
+                const badge = document.getElementById('headerRoleBadge');
+                if (currentUser.role === 'admin') {
+                    badge.textContent = 'Admin';
+                    badge.style.cssText = 'background:#fef3c7; color:#92400e; font-size:0.72rem; padding:2px 7px; border-radius:10px; margin-left:6px;';
+                } else {
+                    badge.textContent = 'User';
+                    badge.style.cssText = 'background:#eff6ff; color:#1e40af; font-size:0.72rem; padding:2px 7px; border-radius:10px; margin-left:6px;';
+                }
+                // แสดงเมนู admin-only
+                if (currentUser.role === 'admin') {
+                    document.querySelectorAll('.admin-only').forEach(el => el.style.display = '');
+                }
+            }
             await initUI();
             await renderDashboard();
         }
@@ -888,6 +919,7 @@
             if (pageId === 'dashboard') renderDashboard();
             if (pageId === 'transaction') { resetTxForm(); renderTxHistory(); }
             if (pageId === 'master') renderMaster();
+            if (pageId === 'users') renderUsers();
         }
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
@@ -1440,6 +1472,92 @@
                     }
                 }
             }
+        }
+
+        // ============================================================
+        // USER MANAGEMENT (Admin only)
+        // ============================================================
+        async function renderUsers() {
+            const tbody = document.querySelector('#usersTable tbody');
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลด...</td></tr>';
+            try {
+                const res = await api('/users');
+                tbody.innerHTML = '';
+                res.data.forEach(u => {
+                    const isMe = currentUser && u.id === currentUser.id;
+                    const roleBadge = u.role === 'admin'
+                        ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:0.8rem;">Admin</span>'
+                        : '<span style="background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:10px;font-size:0.8rem;">User</span>';
+                    const createdDate = new Date(u.created_at).toLocaleDateString('th-TH', { year:'numeric', month:'short', day:'numeric' });
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${u.id}</td>
+                            <td><strong>${u.username}</strong> ${isMe ? '<span style="font-size:0.75rem;color:var(--text-muted)">(คุณ)</span>' : ''}</td>
+                            <td>${roleBadge}</td>
+                            <td>${createdDate}</td>
+                            <td class="text-center">
+                                <button class="btn-secondary" onclick="openChangeUserPwModal(${u.id},'${u.username}')" title="เปลี่ยนรหัสผ่าน">
+                                    <i class="fas fa-key"></i>
+                                </button>
+                                ${!isMe ? `<button class="btn-danger" onclick="deleteUser(${u.id},'${u.username}')" title="ลบ" style="margin-left:4px;">
+                                    <i class="fas fa-trash"></i>
+                                </button>` : ''}
+                            </td>
+                        </tr>`;
+                });
+                if (res.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center">ไม่มีผู้ใช้</td></tr>';
+                }
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" style="color:red" class="text-center">${e.message}</td></tr>`;
+            }
+        }
+
+        function openAddUserModal() {
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newUserPw').value = '';
+            document.getElementById('newUserRole').value = 'user';
+            document.getElementById('addUserModal').style.display = 'flex';
+        }
+
+        async function saveNewUser() {
+            const username = document.getElementById('newUsername').value.trim();
+            const password = document.getElementById('newUserPw').value;
+            const role = document.getElementById('newUserRole').value;
+            if (!username || !password) return alert('กรุณากรอกข้อมูลให้ครบ');
+            try {
+                await api('/users', { method: 'POST', body: { username, password, role } });
+                closeModal('addUserModal');
+                showToast('เพิ่มผู้ใช้สำเร็จ');
+                renderUsers();
+            } catch (e) { alert(e.message); }
+        }
+
+        async function deleteUser(id, username) {
+            if (!confirm(`ยืนยันลบผู้ใช้ "${username}" ?`)) return;
+            try {
+                await api(`/users/${id}`, { method: 'DELETE' });
+                showToast('ลบผู้ใช้สำเร็จ');
+                renderUsers();
+            } catch (e) { alert(e.message); }
+        }
+
+        function openChangeUserPwModal(id, username) {
+            document.getElementById('changeUserPwId').value = id;
+            document.getElementById('changeUserPwName').textContent = username;
+            document.getElementById('changeUserPwNew').value = '';
+            document.getElementById('changeUserPwModal').style.display = 'flex';
+        }
+
+        async function doChangeUserPw() {
+            const id = document.getElementById('changeUserPwId').value;
+            const newPassword = document.getElementById('changeUserPwNew').value;
+            if (!newPassword) return alert('กรุณากรอกรหัสผ่านใหม่');
+            try {
+                await api(`/users/${id}/password`, { method: 'PUT', body: { newPassword } });
+                closeModal('changeUserPwModal');
+                showToast('เปลี่ยนรหัสผ่านสำเร็จ');
+            } catch (e) { alert(e.message); }
         }
 
         // ============================================================
