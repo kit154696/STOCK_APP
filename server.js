@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
@@ -186,7 +186,7 @@ app.use(session({
     cookie: {
         httpOnly: true,
         sameSite: 'strict',
-        secure: process.env.NODE_ENV === 'production',
+        secure: 'auto',
         maxAge: 30 * 60 * 1000  // 30 นาที inactivity timeout
     }
 }));
