@@ -12,6 +12,17 @@ const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const {
+    sanitize,
+    isPositiveInt,
+    validateId,
+    validateItem,
+    validateTransaction,
+    validateSetting,
+    validateRestore,
+    validateNewUser,
+    validateNewPassword,
+} = require('./validators');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,9 +45,14 @@ pool.query('SELECT NOW()')
     .then(() => console.log('✅ เชื่อมต่อ PostgreSQL สำเร็จ'))
     .catch(err => { console.error('❌ เชื่อมต่อ PostgreSQL ไม่ได้:', err.message); process.exit(1); });
 
-// Helper
+// Helper: DB query
 async function query(sql, params = []) {
     return pool.query(sql, params);
+}
+
+// Helper: ส่ง validation error 400
+function badRequest(res, errors) {
+    return res.status(400).json({ success: false, error: errors.join(' | '), errors });
 }
 
 // ===== Security Headers (Helmet) =====
@@ -242,19 +258,14 @@ app.get('/api/users', checkAdmin, async (req, res) => {
 });
 
 app.post('/api/users', checkAdmin, async (req, res) => {
+    const v = validateNewUser(req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     try {
-        const { username, password, role } = req.body;
-        if (!username || !password || !role)
-            return res.status(400).json({ success: false, error: 'กรุณากรอกข้อมูลให้ครบ' });
-        if (password.length < 6)
-            return res.status(400).json({ success: false, error: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' });
-        if (!['admin', 'user'].includes(role))
-            return res.status(400).json({ success: false, error: 'role ต้องเป็น admin หรือ user' });
-
+        const { username, password, role } = v.cleaned;
         const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
         const result = await query(
             'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
-            [username.trim(), hash, role]
+            [username, hash, role]
         );
         res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
@@ -265,6 +276,8 @@ app.post('/api/users', checkAdmin, async (req, res) => {
 });
 
 app.delete('/api/users/:id', checkAdmin, async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
     try {
         const targetId = parseInt(req.params.id);
         if (targetId === req.session.user.id)
@@ -288,12 +301,12 @@ app.delete('/api/users/:id', checkAdmin, async (req, res) => {
 });
 
 app.put('/api/users/:id/password', checkAdmin, async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
+    const vPw = validateNewPassword(req.body);
+    if (!vPw.ok) return badRequest(res, vPw.errors);
     try {
-        const { newPassword } = req.body;
-        if (!newPassword || newPassword.length < 6)
-            return res.status(400).json({ success: false, error: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' });
-
-        const hash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+        const hash = await bcrypt.hash(vPw.cleaned.newPassword, BCRYPT_ROUNDS);
         await query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.params.id]);
         res.json({ success: true });
     } catch (err) {
@@ -316,12 +329,12 @@ app.get('/api/settings', async (req, res) => {
 });
 
 app.put('/api/settings/:key', async (req, res) => {
+    const v = validateSetting(req.params.key, req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     try {
-        const { key } = req.params;
-        const { value } = req.body;
         await query(
             `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [key, value]
+            [req.params.key, v.cleaned.value]
         );
         res.json({ success: true });
     } catch (err) {
@@ -392,22 +405,30 @@ app.get('/api/items/:id', async (req, res) => {
 });
 
 app.post('/api/items', async (req, res) => {
+    const v = validateItem(req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     try {
-        const { code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price } = req.body;
+        const { code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price } = v.cleaned;
         const result = await query(
             `INSERT INTO items (code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-            [code, name, spec || '-', cat_code, cat_name, unit, min_qty || 5, location || 'กองพัสดุ', last_price || 0]
+            [code, name, spec || '-', cat_code, cat_name, unit, min_qty, location, last_price]
         );
         res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
+        if (err.code === '23505')
+            return res.status(400).json({ success: false, error: 'รหัสวัสดุนี้มีอยู่แล้ว' });
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
 app.put('/api/items/:id', async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
+    const v = validateItem(req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     try {
-        const { code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price } = req.body;
+        const { code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price } = v.cleaned;
         await query(
             `UPDATE items SET code=$1, name=$2, spec=$3, cat_code=$4, cat_name=$5, unit=$6, min_qty=$7, location=$8, last_price=$9, updated_at=NOW()
              WHERE id=$10`,
@@ -420,6 +441,8 @@ app.put('/api/items/:id', async (req, res) => {
 });
 
 app.delete('/api/items/:id', async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
     try {
         const used = await query('SELECT COUNT(*) as cnt FROM transaction_lines WHERE item_id = $1', [req.params.id]);
         if (parseInt(used.rows[0].cnt) > 0)
@@ -513,14 +536,16 @@ app.get('/api/transactions/:id', async (req, res) => {
 });
 
 app.post('/api/transactions', async (req, res) => {
+    const v = validateTransaction(req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     const client = await pool.connect();
     try {
-        const { date, type, doc_no, ref, note, user_name, approver, checker, lines } = req.body;
+        const { date, type, doc_no, ref, note, user_name, approver, checker, lines } = v.cleaned;
         await client.query('BEGIN');
         const txResult = await client.query(
             `INSERT INTO transactions (date, type, doc_no, ref, note, user_name, approver, checker)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-            [date, type, doc_no, ref || '', note || '', user_name || '', approver || '', checker || '']
+            [date, type, doc_no, ref, note, user_name, approver, checker]
         );
         const txId = txResult.rows[0].id;
         for (const line of lines) {
@@ -548,6 +573,8 @@ app.post('/api/transactions', async (req, res) => {
 });
 
 app.delete('/api/transactions/:id', async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
     try {
         await query('DELETE FROM transaction_lines WHERE tx_id = $1', [req.params.id]);
         await query('DELETE FROM transactions WHERE id = $1', [req.params.id]);
@@ -722,11 +749,11 @@ app.get('/api/backup', checkAdmin, async (req, res) => {
 });
 
 app.post('/api/restore', checkAdmin, async (req, res) => {
+    const v = validateRestore(req.body);
+    if (!v.ok) return badRequest(res, v.errors);
     const client = await pool.connect();
     try {
         const { data } = req.body;
-        if (!data || !data.version)
-            return res.status(400).json({ success: false, error: 'รูปแบบข้อมูลไม่ถูกต้อง' });
 
         await client.query('BEGIN');
         await client.query('DELETE FROM transaction_lines');
