@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ทดสอบความปลอดภัย — ระบบบัญชีคุมวัสดุ อปท.</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #1a365d;
+            --primary-light: #234578;
+            --accent: #c59a2e;
+            --pass: #16794a;
+            --pass-bg: #f0fdf4;
+            --fail: #b91c1c;
+            --fail-bg: #fef2f2;
+            --warn: #b45309;
+            --warn-bg: #fffbeb;
+            --border: #e2e8f0;
+            --text: #1e293b;
+            --text-muted: #64748b;
+            --font: 'Sarabun', sans-serif;
+            --radius: 10px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--font);
+            background: #f1f5f9;
+            color: var(--text);
+            min-height: 100vh;
+        }
+        /* ── Header ── */
+        .page-header {
+            background: var(--primary);
+            color: white;
+            padding: 18px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+        }
+        .page-header .left { display: flex; align-items: center; gap: 12px; }
+        .page-header h1 { font-size: 1.15rem; font-weight: 700; }
+        .page-header .sub { font-size: 0.8rem; color: rgba(255,255,255,0.6); margin-top: 2px; }
+        .btn-back {
+            background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 7px;
+            cursor: pointer;
+            font-family: var(--font);
+            font-size: 0.9rem;
+            display: flex; align-items: center; gap: 6px;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+        .btn-back:hover { background: rgba(255,255,255,0.2); }
+
+        /* ── Main Layout ── */
+        .container { max-width: 960px; margin: 0 auto; padding: 28px 20px 48px; }
+
+        /* ── Summary Card ── */
+        .summary-card {
+            background: white;
+            border-radius: var(--radius);
+            padding: 28px 32px;
+            margin-bottom: 24px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.07);
+            display: flex;
+            align-items: center;
+            gap: 28px;
+        }
+        .grade-circle {
+            width: 84px; height: 84px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 2.4rem;
+            font-weight: 700;
+            flex-shrink: 0;
+            border: 4px solid;
+        }
+        .grade-A { color: var(--pass); border-color: var(--pass); background: var(--pass-bg); }
+        .grade-B { color: #1d4ed8; border-color: #1d4ed8; background: #eff6ff; }
+        .grade-C { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+        .grade-D { color: #9a3412; border-color: #9a3412; background: #fff7ed; }
+        .grade-F { color: var(--fail); border-color: var(--fail); background: var(--fail-bg); }
+        .grade-pending { color: #94a3b8; border-color: #cbd5e1; background: #f8fafc; font-size: 1.6rem; }
+
+        .summary-info { flex: 1; }
+        .summary-info h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; }
+        .summary-info .desc { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 14px; }
+        .stats-row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .stat-item { text-align: center; }
+        .stat-item .num { font-size: 1.6rem; font-weight: 700; }
+        .stat-item .lbl { font-size: 0.78rem; color: var(--text-muted); }
+        .stat-pass .num { color: var(--pass); }
+        .stat-fail .num { color: var(--fail); }
+        .stat-total .num { color: var(--primary); }
+
+        /* Progress bar */
+        .progress-wrap { margin: 14px 0 4px; }
+        .progress-label { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
+        .progress-bar { height: 8px; border-radius: 99px; background: #e2e8f0; overflow: hidden; }
+        .progress-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--pass), #34d399); transition: width 0.6s ease; }
+
+        /* ── Action Buttons ── */
+        .action-row { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-family: var(--font);
+            font-size: 0.95rem;
+            font-weight: 600;
+            display: flex; align-items: center; gap: 8px;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .btn:hover { opacity: 0.88; }
+        .btn:active { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-outline { background: white; color: var(--primary); border: 1.5px solid var(--primary); }
+        .btn-print { background: white; color: var(--text-muted); border: 1.5px solid var(--border); }
+
+        /* Spinning loader */
+        .spin { animation: spin 0.8s linear infinite; display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Group Section ── */
+        .group-section {
+            background: white;
+            border-radius: var(--radius);
+            margin-bottom: 18px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+        .group-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            background: #fafbfc;
+        }
+        .group-icon {
+            width: 36px; height: 36px;
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+        .icon-auth { background: #eff6ff; color: #1d4ed8; }
+        .icon-header { background: #f5f3ff; color: #7c3aed; }
+        .icon-db { background: #ecfdf5; color: #15803d; }
+        .icon-session { background: #fff7ed; color: #c2410c; }
+        .icon-api { background: #fffbeb; color: #b45309; }
+        .icon-file { background: #fef2f2; color: #b91c1c; }
+        .icon-https { background: #f0fdf4; color: #166534; }
+
+        .group-title { font-weight: 700; font-size: 1rem; }
+        .group-sub { font-size: 0.82rem; color: var(--text-muted); margin-top: 1px; }
+        .group-badge { margin-left: auto; font-size: 0.8rem; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+        .badge-ok { background: var(--pass-bg); color: var(--pass); }
+        .badge-warn { background: var(--warn-bg); color: var(--warn); }
+        .badge-fail { background: var(--fail-bg); color: var(--fail); }
+        .badge-pending { background: #f1f5f9; color: #94a3b8; }
+
+        /* ── Test Rows ── */
+        .test-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            padding: 13px 20px;
+            border-bottom: 1px solid #f1f5f9;
+            transition: background 0.15s;
+        }
+        .test-row:last-child { border-bottom: none; }
+        .test-row:hover { background: #f8fafc; }
+        .test-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; margin-top: 1px; }
+        .icon-pass { background: var(--pass-bg); color: var(--pass); }
+        .icon-fail { background: var(--fail-bg); color: var(--fail); }
+        .icon-loading { background: #f1f5f9; color: #94a3b8; }
+        .test-body { flex: 1; min-width: 0; }
+        .test-name { font-weight: 600; font-size: 0.93rem; margin-bottom: 2px; }
+        .test-detail { font-size: 0.82rem; color: var(--text-muted); word-break: break-all; }
+        .test-id { font-size: 0.72rem; color: #94a3b8; font-family: monospace; margin-left: auto; flex-shrink: 0; }
+
+        /* Skeleton loading */
+        .skeleton { background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+        @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+        .sk-line { height: 12px; margin-bottom: 6px; }
+        .sk-short { width: 60%; }
+        .sk-long { width: 90%; }
+
+        /* ── Footer note ── */
+        .footer-note {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 24px;
+            padding: 16px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* ── Print ── */
+        @media print {
+            body { background: white; }
+            .page-header, .action-row { display: none; }
+            .container { padding: 0; max-width: 100%; }
+            .group-section { box-shadow: none; border: 1px solid var(--border); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="page-header">
+    <div class="left">
+        <div>
+            <h1><i class="fas fa-shield-alt" style="color: var(--accent);"></i> &nbsp;ทดสอบความปลอดภัยระบบ</h1>
+            <div class="sub">Security Check — ระบบบัญชีคุมวัสดุ อปท.</div>
+        </div>
+    </div>
+    <a href="/" class="btn-back"><i class="fas fa-arrow-left"></i> กลับหน้าหลัก</a>
+</div>
+
+<div class="container">
+    <!-- Summary Card -->
+    <div class="summary-card">
+        <div class="grade-circle grade-pending" id="gradeCircle">
+            <i class="fas fa-shield-alt"></i>
+        </div>
+        <div class="summary-info">
+            <h2 id="summaryTitle">พร้อมทดสอบความปลอดภัย</h2>
+            <div class="desc" id="summaryDesc">กดปุ่ม "เริ่มทดสอบ" เพื่อตรวจสอบการตั้งค่าความปลอดภัยของระบบทั้งหมด</div>
+            <div class="progress-wrap" id="progressWrap" style="display:none">
+                <div class="progress-label">
+                    <span id="progressLabel">กำลังทดสอบ...</span>
+                    <span id="progressPct">0%</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+            </div>
+            <div class="stats-row" id="statsRow" style="display:none">
+                <div class="stat-item stat-pass"><div class="num" id="statPass">0</div><div class="lbl">ผ่าน</div></div>
+                <div class="stat-item stat-fail"><div class="num" id="statFail">0</div><div class="lbl">ไม่ผ่าน</div></div>
+                <div class="stat-item stat-total"><div class="num" id="statTotal">0</div><div class="lbl">รวม</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Action Row -->
+    <div class="action-row">
+        <button class="btn btn-primary" id="btnScan" onclick="startScan()">
+            <i class="fas fa-play"></i>
+            <span id="btnScanText">เริ่มทดสอบ</span>
+        </button>
+        <button class="btn btn-outline" id="btnDownload" onclick="downloadReport()" disabled>
+            <i class="fas fa-download"></i> ดาวน์โหลดรายงาน
+        </button>
+        <button class="btn btn-print" onclick="window.print()">
+            <i class="fas fa-print"></i> พิมพ์
+        </button>
+    </div>
+
+    <!-- Test Groups -->
+    <div id="groups">
+        <!-- จะถูก render โดย JS -->
+    </div>
+
+    <div class="footer-note">
+        ผลการทดสอบนี้เป็นการตรวจสอบเบื้องต้นโดยอัตโนมัติ ไม่ได้แทนที่การ Penetration Test โดยผู้เชี่ยวชาญ<br>
+        สงวนไว้สำหรับ Admin เท่านั้น
+    </div>
+</div>
+
+<script>
+const GROUPS = [
+    { id: 'A', label: 'Authentication & Authorization', sub: 'การยืนยันตัวตนและสิทธิ์การเข้าถึง', icon: 'fa-user-shield', iconClass: 'icon-auth' },
+    { id: 'B', label: 'HTTP Security Headers', sub: 'การตั้งค่า HTTP headers สำหรับความปลอดภัย', icon: 'fa-globe', iconClass: 'icon-header' },
+    { id: 'C', label: 'Database Security', sub: 'ความปลอดภัยของฐานข้อมูล', icon: 'fa-database', iconClass: 'icon-db' },
+    { id: 'D', label: 'Session Security', sub: 'การจัดการ session อย่างปลอดภัย', icon: 'fa-clock', iconClass: 'icon-session' },
+    { id: 'E', label: 'API Rate Limiting', sub: 'การจำกัดปริมาณ request', icon: 'fa-tachometer-alt', iconClass: 'icon-api' },
+    { id: 'F', label: 'File & Path Security', sub: 'การป้องกันการเข้าถึงไฟล์ที่ไม่อนุญาต', icon: 'fa-folder-open', iconClass: 'icon-file' },
+    { id: 'G', label: 'HTTPS & Transport Security', sub: 'ความปลอดภัยในการรับส่งข้อมูล', icon: 'fa-lock', iconClass: 'icon-https' },
+];
+
+let scanResult = null;
+
+// render skeleton on load
+window.onload = () => {
+    renderSkeleton();
+};
+
+function renderSkeleton() {
+    const container = document.getElementById('groups');
+    container.innerHTML = GROUPS.map(g => `
+        <div class="group-section">
+            <div class="group-header">
+                <div class="group-icon ${g.iconClass}"><i class="fas ${g.icon}"></i></div>
+                <div>
+                    <div class="group-title">${g.label}</div>
+                    <div class="group-sub">${g.sub}</div>
+                </div>
+                <span class="group-badge badge-pending" id="badge-${g.id}">รอทดสอบ</span>
+            </div>
+            <div id="rows-${g.id}">
+                ${[1,2,3].map(() => `
+                <div class="test-row">
+                    <div class="test-icon icon-loading"><i class="fas fa-circle" style="font-size:8px;"></i></div>
+                    <div class="test-body">
+                        <div class="skeleton sk-line sk-short"></div>
+                        <div class="skeleton sk-line sk-long"></div>
+                    </div>
+                </div>`).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function startScan() {
+    const btn = document.getElementById('btnScan');
+    const btnText = document.getElementById('btnScanText');
+    btn.disabled = true;
+    btnText.innerHTML = '<i class="fas fa-circle-notch spin"></i> กำลังทดสอบ...';
+    document.getElementById('btnDownload').disabled = true;
+    document.getElementById('progressWrap').style.display = 'block';
+    document.getElementById('statsRow').style.display = 'none';
+    document.getElementById('summaryTitle').textContent = 'กำลังทดสอบความปลอดภัย...';
+    document.getElementById('summaryDesc').textContent = 'รอสักครู่ ระบบกำลังตรวจสอบรายการทั้งหมด';
+
+    // Reset grade circle
+    const gc = document.getElementById('gradeCircle');
+    gc.className = 'grade-circle grade-pending';
+    gc.innerHTML = '<i class="fas fa-circle-notch spin"></i>';
+
+    updateProgress(10, 'กำลังเชื่อมต่อเซิร์ฟเวอร์...');
+
+    try {
+        const res = await fetch('/api/security-check', { credentials: 'same-origin' });
+        updateProgress(80, 'กำลังประมวลผล...');
+        const data = await res.json();
+
+        if (!data.success) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+
+        scanResult = data;
+        updateProgress(100, 'เสร็จสิ้น');
+
+        setTimeout(() => {
+            renderResults(data);
+            renderSummary(data.summary);
+            document.getElementById('btnDownload').disabled = false;
+            btn.disabled = false;
+            btnText.innerHTML = '<i class="fas fa-redo"></i> ทดสอบอีกครั้ง';
+        }, 300);
+    } catch (err) {
+        updateProgress(0, 'เกิดข้อผิดพลาด');
+        document.getElementById('summaryTitle').textContent = 'เกิดข้อผิดพลาด';
+        document.getElementById('summaryDesc').textContent = err.message;
+        gc.className = 'grade-circle grade-F';
+        gc.innerHTML = '<i class="fas fa-times"></i>';
+        btn.disabled = false;
+        btnText.innerHTML = '<i class="fas fa-redo"></i> ลองใหม่';
+    }
+}
+
+function updateProgress(pct, label) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressLabel').textContent = label;
+    document.getElementById('progressPct').textContent = pct + '%';
+}
+
+function renderResults(data) {
+    GROUPS.forEach(g => {
+        const tests = data.results[g.id] || [];
+        const passed = tests.filter(t => t.pass).length;
+        const failed = tests.filter(t => !t.pass).length;
+
+        // badge
+        const badge = document.getElementById(`badge-${g.id}`);
+        if (failed === 0) { badge.className = 'group-badge badge-ok'; badge.textContent = `ผ่าน ${passed}/${tests.length}`; }
+        else if (failed <= Math.ceil(tests.length / 2)) { badge.className = 'group-badge badge-warn'; badge.textContent = `ไม่ผ่าน ${failed}/${tests.length}`; }
+        else { badge.className = 'group-badge badge-fail'; badge.textContent = `ไม่ผ่าน ${failed}/${tests.length}`; }
+
+        // rows
+        const rowsEl = document.getElementById(`rows-${g.id}`);
+        rowsEl.innerHTML = tests.length === 0
+            ? '<div class="test-row"><div class="test-body" style="color:var(--text-muted)">ไม่มีรายการทดสอบ</div></div>'
+            : tests.map(t => `
+            <div class="test-row">
+                <div class="test-icon ${t.pass ? 'icon-pass' : 'icon-fail'}">
+                    <i class="fas ${t.pass ? 'fa-check' : 'fa-times'}"></i>
+                </div>
+                <div class="test-body">
+                    <div class="test-name" style="color: ${t.pass ? 'var(--text)' : 'var(--fail)'}">${escHtml(t.name)}</div>
+                    <div class="test-detail">${escHtml(t.detail || '')}</div>
+                </div>
+                <div class="test-id">${escHtml(t.id)}</div>
+            </div>`).join('');
+    });
+}
+
+function renderSummary(summary) {
+    const { passed, failed, total, grade } = summary;
+    const gc = document.getElementById('gradeCircle');
+    gc.className = `grade-circle grade-${grade}`;
+    gc.textContent = grade;
+
+    document.getElementById('statPass').textContent = passed;
+    document.getElementById('statFail').textContent = failed;
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statsRow').style.display = 'flex';
+
+    const gradeMessages = {
+        A: 'ยอดเยี่ยม! การตั้งค่าความปลอดภัยผ่านทุกรายการ',
+        B: 'ดีมาก มีจุดที่ควรปรับปรุงเล็กน้อย',
+        C: 'ปานกลาง มีจุดเสี่ยงที่ควรแก้ไข',
+        D: 'ต้องปรับปรุง พบจุดเสี่ยงหลายรายการ',
+        F: 'ไม่ผ่าน พบปัญหาความปลอดภัยร้ายแรง',
+    };
+    document.getElementById('summaryTitle').textContent = `เกรด ${grade}: ${gradeMessages[grade]}`;
+    document.getElementById('summaryDesc').textContent = `ผ่าน ${passed} / ${total} รายการ (ไม่ผ่าน ${failed} รายการ)`;
+    document.getElementById('progressWrap').style.display = 'none';
+}
+
+function downloadReport() {
+    if (!scanResult) return;
+    const { results, summary } = scanResult;
+    const now = new Date().toLocaleString('th-TH');
+    const lines = [
+        `รายงานทดสอบความปลอดภัย — ระบบบัญชีคุมวัสดุ อปท.`,
+        `วันที่: ${now}`,
+        `เกรด: ${summary.grade} | ผ่าน: ${summary.passed} | ไม่ผ่าน: ${summary.failed} | รวม: ${summary.total}`,
+        '',
+    ];
+    GROUPS.forEach(g => {
+        lines.push(`═══ ${g.id}: ${g.label} ═══`);
+        const tests = results[g.id] || [];
+        tests.forEach(t => {
+            lines.push(`  [${t.pass ? 'PASS' : 'FAIL'}] ${t.id} — ${t.name}`);
+            if (t.detail) lines.push(`         ${t.detail}`);
+        });
+        lines.push('');
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `security-report-${new Date().toISOString().slice(0,10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function escHtml(str) {
+    return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
