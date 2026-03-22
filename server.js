@@ -179,6 +179,11 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '10mb' }));
+app.use('/security-test.html', (req, res, next) => {
+    if (!req.session?.user) return res.redirect('/login');
+    if (req.session.user.role !== 'admin') return res.redirect('/');
+    next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ===== Session Middleware =====
