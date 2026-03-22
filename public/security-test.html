@@ -185,6 +185,7 @@
         .test-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; margin-top: 1px; }
         .icon-pass { background: var(--pass-bg); color: var(--pass); }
         .icon-fail { background: var(--fail-bg); color: var(--fail); }
+        .icon-warn { background: var(--warn-bg); color: var(--warn); }
         .icon-loading { background: #f1f5f9; color: #94a3b8; }
         .test-body { flex: 1; min-width: 0; }
         .test-name { font-weight: 600; font-size: 0.93rem; margin-bottom: 2px; }
@@ -379,10 +380,12 @@ function renderResults(data) {
         const tests = data.results[g.id] || [];
         const passed = tests.filter(t => t.pass).length;
         const failed = tests.filter(t => !t.pass).length;
+        const warned = tests.filter(t => t.pass && t.warn).length;
 
         // badge
         const badge = document.getElementById(`badge-${g.id}`);
-        if (failed === 0) { badge.className = 'group-badge badge-ok'; badge.textContent = `ผ่าน ${passed}/${tests.length}`; }
+        if (failed === 0 && warned === 0) { badge.className = 'group-badge badge-ok'; badge.textContent = `ผ่าน ${passed}/${tests.length}`; }
+        else if (failed === 0 && warned > 0) { badge.className = 'group-badge badge-warn'; badge.textContent = `ผ่าน ${passed}/${tests.length} (เตือน ${warned})`; }
         else if (failed <= Math.ceil(tests.length / 2)) { badge.className = 'group-badge badge-warn'; badge.textContent = `ไม่ผ่าน ${failed}/${tests.length}`; }
         else { badge.className = 'group-badge badge-fail'; badge.textContent = `ไม่ผ่าน ${failed}/${tests.length}`; }
 
@@ -390,17 +393,22 @@ function renderResults(data) {
         const rowsEl = document.getElementById(`rows-${g.id}`);
         rowsEl.innerHTML = tests.length === 0
             ? '<div class="test-row"><div class="test-body" style="color:var(--text-muted)">ไม่มีรายการทดสอบ</div></div>'
-            : tests.map(t => `
+            : tests.map(t => {
+                const iconClass = t.pass ? (t.warn ? 'icon-warn' : 'icon-pass') : 'icon-fail';
+                const faIcon    = t.pass ? (t.warn ? 'fa-exclamation' : 'fa-check') : 'fa-times';
+                const nameColor = t.pass ? (t.warn ? 'var(--warn)' : 'var(--text)') : 'var(--fail)';
+                return `
             <div class="test-row">
-                <div class="test-icon ${t.pass ? 'icon-pass' : 'icon-fail'}">
-                    <i class="fas ${t.pass ? 'fa-check' : 'fa-times'}"></i>
+                <div class="test-icon ${iconClass}">
+                    <i class="fas ${faIcon}"></i>
                 </div>
                 <div class="test-body">
-                    <div class="test-name" style="color: ${t.pass ? 'var(--text)' : 'var(--fail)'}">${escHtml(t.name)}</div>
+                    <div class="test-name" style="color: ${nameColor}">${escHtml(t.name)}</div>
                     <div class="test-detail">${escHtml(t.detail || '')}</div>
                 </div>
                 <div class="test-id">${escHtml(t.id)}</div>
-            </div>`).join('');
+            </div>`;
+            }).join('');
     });
 }
 

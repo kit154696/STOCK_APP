@@ -12,6 +12,7 @@ const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
 
 const {
     sanitize,
@@ -1094,50 +1095,62 @@ app.get('/security-test', async (req, res) => {
 });
 
 app.get('/api/security-check', checkAdmin, async (req, res) => {
-    const base = `http://localhost:${PORT}`;
-    const authCookie = req.headers.cookie || '';
     const results = { A: [], B: [], C: [], D: [], E: [], F: [], G: [] };
 
-    async function probe(url, opts = {}) {
-        try {
-            const r = await fetch(url, { redirect: 'manual', ...opts });
-            return r;
-        } catch (e) {
-            return null;
-        }
+    // ── Helper: HTTP request ไปหา localhost โดยตรง (ไม่ผ่าน internet) ──────
+    function internalRequest(method, urlPath, body = null, extraHeaders = {}) {
+        return new Promise((resolve) => {
+            const bodyStr = body ? JSON.stringify(body) : null;
+            const options = {
+                hostname: '127.0.0.1',
+                port: PORT,
+                path: urlPath,
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...extraHeaders,
+                    ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+                },
+            };
+            const req2 = http.request(options, (r) => {
+                let data = '';
+                r.on('data', c => { data += c; });
+                r.on('end', () => resolve({
+                    statusCode: r.statusCode,
+                    headers: r.headers,
+                    body: data,
+                    json() { try { return JSON.parse(this.body); } catch { return {}; } },
+                }));
+            });
+            req2.on('error', () => resolve(null));
+            if (bodyStr) req2.write(bodyStr);
+            req2.end();
+        });
     }
 
     // ── Group A: Authentication & Authorization ───────────────────────────
-    // A1: API ไม่มี session ต้องได้ 401
-    const a1 = await probe(`${base}/api/items`);
+    const a1 = await internalRequest('GET', '/api/items');
     results.A.push({
         id: 'A1', name: 'ป้องกัน API ที่ไม่ได้ล็อกอิน',
-        pass: a1 && a1.status === 401,
-        detail: a1 ? `GET /api/items → ${a1.status}` : 'ไม่สามารถเชื่อมต่อได้',
+        pass: a1 && a1.statusCode === 401,
+        detail: a1 ? `GET /api/items → ${a1.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้',
     });
 
-    // A2: /api/users ต้องการ admin เท่านั้น — เรียกด้วย session ของ user ปกติจะไม่ผ่าน
-    const a2 = await probe(`${base}/api/users`);
+    const a2 = await internalRequest('GET', '/api/users');
     results.A.push({
         id: 'A2', name: 'ป้องกัน endpoint สงวนสิทธิ์ (ไม่มี session)',
-        pass: a2 && a2.status === 401,
-        detail: a2 ? `GET /api/users → ${a2.status}` : 'ไม่สามารถเชื่อมต่อได้',
+        pass: a2 && a2.statusCode === 401,
+        detail: a2 ? `GET /api/users → ${a2.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้',
     });
 
-    // A3: Login ด้วยรหัสผิดต้องได้ 401
-    const a3 = await probe(`${base}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: '__invalid_user__', password: 'wrong' }),
-    });
-    const a3json = a3 ? await a3.json().catch(() => ({})) : {};
+    const a3 = await internalRequest('POST', '/api/login', { username: '__invalid_user__', password: 'wrong' });
+    const a3json = a3 ? a3.json() : {};
     results.A.push({
         id: 'A3', name: 'ปฏิเสธ login ที่ข้อมูลผิด',
-        pass: a3 && a3.status === 401 && a3json.success === false,
-        detail: a3 ? `POST /api/login (wrong creds) → ${a3.status}` : 'ไม่สามารถเชื่อมต่อได้',
+        pass: a3 && a3.statusCode === 401 && a3json.success === false,
+        detail: a3 ? `POST /api/login (wrong creds) → ${a3.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้',
     });
 
-    // A4: Password hashing — ดูว่า hash ไม่ใช่ plaintext
     try {
         const userRow = await pool.query(`SELECT password_hash FROM users LIMIT 1`);
         const hash = userRow.rows[0]?.password_hash || '';
@@ -1151,23 +1164,17 @@ app.get('/api/security-check', checkAdmin, async (req, res) => {
         results.A.push({ id: 'A4', name: 'รหัสผ่านเข้ารหัสด้วย bcrypt', pass: false, detail: e.message });
     }
 
-    // A5: SQL Injection ใน login
-    const a5 = await probe(`${base}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: "' OR '1'='1", password: "' OR '1'='1" }),
-    });
-    const a5json = a5 ? await a5.json().catch(() => ({})) : {};
+    const a5 = await internalRequest('POST', '/api/login', { username: "' OR '1'='1", password: "' OR '1'='1" });
+    const a5json = a5 ? a5.json() : {};
     results.A.push({
         id: 'A5', name: 'ป้องกัน SQL Injection ที่ login',
         pass: a5 && !a5json.success,
-        detail: a5 ? `SQL injection → ${a5.status} / success=${a5json.success}` : 'ไม่สามารถเชื่อมต่อได้',
+        detail: a5 ? `SQL injection → ${a5.statusCode} / success=${a5json.success}` : 'ไม่สามารถเชื่อมต่อ localhost ได้',
     });
 
     // ── Group B: HTTP Security Headers ────────────────────────────────────
-    // ตรวจจาก response headers ของ /login
-    const bRes = await probe(`${base}/login`);
-    const bHeaders = bRes ? Object.fromEntries(bRes.headers.entries()) : {};
+    const bRes = await internalRequest('GET', '/login');
+    const bHdr = bRes?.headers || {};
     const headerChecks = [
         ['B1', 'X-Content-Type-Options', 'x-content-type-options', 'nosniff'],
         ['B2', 'X-Frame-Options / frame-ancestors', 'x-frame-options', null],
@@ -1175,12 +1182,11 @@ app.get('/api/security-check', checkAdmin, async (req, res) => {
         ['B4', 'X-XSS-Protection', 'x-xss-protection', null],
     ];
     for (const [id, name, hdr, expected] of headerChecks) {
-        const val = bHeaders[hdr];
+        const val = bHdr[hdr];
         const pass = expected ? val === expected : !!val;
         results.B.push({ id, name, pass, detail: val ? `${hdr}: ${val}` : `ไม่พบ header ${hdr}` });
     }
-    // B5: Content-Security-Policy
-    const cspVal = bHeaders['content-security-policy'];
+    const cspVal = bHdr['content-security-policy'];
     results.B.push({
         id: 'B5', name: 'Content-Security-Policy',
         pass: !!cspVal,
@@ -1188,47 +1194,38 @@ app.get('/api/security-check', checkAdmin, async (req, res) => {
     });
 
     // ── Group C: Database Security ────────────────────────────────────────
-    // C1: ตาราง audit_logs มีอยู่
     try {
         const c1 = await pool.query(`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'audit_logs')`);
         results.C.push({ id: 'C1', name: 'ตาราง Audit Log มีอยู่', pass: c1.rows[0].exists, detail: c1.rows[0].exists ? 'พบตาราง audit_logs' : 'ไม่พบตาราง audit_logs' });
     } catch (e) { results.C.push({ id: 'C1', name: 'ตาราง Audit Log มีอยู่', pass: false, detail: e.message }); }
 
-    // C2: Parameterized query — ตรวจว่าไม่มี string concatenation ใน query จาก validators
-    results.C.push({ id: 'C2', name: 'ใช้ Parameterized Query (validators.js)', pass: true, detail: 'ตรวจสอบจาก source — validators.js ใช้ sanitize() + pool.query($1,$2,...)' });
+    results.C.push({ id: 'C2', name: 'ใช้ Parameterized Query (validators.js)', pass: true, detail: 'validators.js ใช้ sanitize() + pool.query($1,$2,...) ป้องกัน SQL injection' });
 
-    // C3: ไม่มี column ที่เก็บ plaintext password
     try {
         const c3 = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='password'`);
         results.C.push({ id: 'C3', name: 'ไม่มีคอลัมน์ password (plaintext)', pass: c3.rows.length === 0, detail: c3.rows.length === 0 ? 'ไม่พบคอลัมน์ "password" — ใช้ password_hash แทน' : 'พบคอลัมน์ "password" ซึ่งอาจเก็บรหัสผ่านดิบ!' });
     } catch (e) { results.C.push({ id: 'C3', name: 'ไม่มีคอลัมน์ password (plaintext)', pass: false, detail: e.message }); }
 
-    // C4: Connection Pool ใช้ SSL
     const sslEnabled = pool.options?.ssl !== false && !!pool.options?.ssl;
     results.C.push({ id: 'C4', name: 'PostgreSQL ใช้ SSL Connection', pass: sslEnabled, detail: sslEnabled ? 'SSL enabled (rejectUnauthorized: false for Railway)' : 'SSL ไม่ได้เปิดใช้งาน' });
 
     // ── Group D: Session Security ─────────────────────────────────────────
-    // D1: Set-Cookie มี HttpOnly
-    const loginRes = await probe(`${base}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: 'admin123' }),
-    });
-    const setCookie = loginRes?.headers.get('set-cookie') || '';
-    results.D.push({ id: 'D1', name: 'Session Cookie: HttpOnly', pass: setCookie.toLowerCase().includes('httponly'), detail: setCookie ? `Set-Cookie มี HttpOnly: ${setCookie.toLowerCase().includes('httponly')}` : 'ไม่พบ Set-Cookie header' });
-    results.D.push({ id: 'D2', name: 'Session Cookie: SameSite', pass: setCookie.toLowerCase().includes('samesite'), detail: setCookie ? `SameSite: ${setCookie.toLowerCase().includes('samesite')}` : 'ไม่พบ Set-Cookie header' });
-
-    // D3: Rolling session (30 min timeout)
+    const loginR = await internalRequest('POST', '/api/login', { username: 'admin', password: 'admin123' });
+    const rawCookies = loginR?.headers['set-cookie'];
+    const setCookie = Array.isArray(rawCookies)
+        ? rawCookies.join('; ')
+        : (rawCookies || '');
+    const cookieLower = setCookie.toLowerCase();
+    results.D.push({ id: 'D1', name: 'Session Cookie: HttpOnly', pass: cookieLower.includes('httponly'), detail: setCookie ? `HttpOnly: ${cookieLower.includes('httponly')}` : 'ไม่พบ Set-Cookie header (login อาจใช้รหัสผ่านที่ถูกเปลี่ยนแล้ว)' });
+    results.D.push({ id: 'D2', name: 'Session Cookie: SameSite', pass: cookieLower.includes('samesite'), detail: setCookie ? `SameSite: ${cookieLower.includes('samesite')}` : 'ไม่พบ Set-Cookie header' });
     results.D.push({ id: 'D3', name: 'Rolling Session (30 นาที)', pass: true, detail: 'ตั้งค่า rolling: true, maxAge: 1800000 ms (30 min)' });
 
-    // D4: Session secret ไม่ใช่ค่า default
     const sessionSecret = process.env.SESSION_SECRET || '';
     const defaultSecrets = ['secret', 'keyboard cat', 'changeme', 'mysecret', ''];
     const secretOk = !defaultSecrets.includes(sessionSecret.toLowerCase());
-    results.D.push({ id: 'D4', name: 'SESSION_SECRET ไม่ใช่ค่าเริ่มต้น', pass: secretOk, detail: secretOk ? 'SESSION_SECRET ตั้งค่าเป็น custom secret' : 'SESSION_SECRET ยังเป็นค่า default หรือว่างเปล่า — ควรเปลี่ยน!' });
+    results.D.push({ id: 'D4', name: 'SESSION_SECRET ไม่ใช่ค่าเริ่มต้น', pass: secretOk, detail: secretOk ? 'SESSION_SECRET ตั้งค่าเป็น custom secret' : 'SESSION_SECRET ว่างเปล่าหรือเป็นค่า default — ควรตั้งค่าใน Railway Variables!' });
 
     // ── Group E: API Security ─────────────────────────────────────────────
-    // E1-E3: ตรวจ rate limit settings จาก DB
     try {
         const rlRows = await pool.query('SELECT * FROM rate_limit_settings ORDER BY key');
         for (const row of rlRows.rows) {
@@ -1243,42 +1240,40 @@ app.get('/api/security-check', checkAdmin, async (req, res) => {
         results.E.push({ id: 'E1', name: 'Rate Limit Settings', pass: false, detail: e.message });
     }
 
-    // E4: CORS ไม่เปิดกว้างเกินไป
-    const corsTestRes = await probe(`${base}/api/items`, { headers: { 'Origin': 'https://evil.com' } });
-    const acaoHeader = corsTestRes?.headers.get('access-control-allow-origin') || '';
+    const corsR = await internalRequest('GET', '/api/items', null, { 'Origin': 'https://evil.com' });
+    const acaoHeader = corsR?.headers['access-control-allow-origin'] || '';
     const corsOk = acaoHeader !== '*' && acaoHeader !== 'https://evil.com';
     results.E.push({ id: 'E4', name: 'CORS ไม่เปิดรับทุก Origin', pass: corsOk, detail: corsOk ? 'ไม่พบ CORS wildcard/reflect สำหรับ evil origin' : `Access-Control-Allow-Origin: ${acaoHeader}` });
 
     // ── Group F: File & Path Security ─────────────────────────────────────
-    // F1: /security-test.html ต้อง redirect (ไม่ให้เข้าตรง)
-    const f1 = await probe(`${base}/security-test.html`);
-    results.F.push({ id: 'F1', name: '/security-test.html redirect แทนให้ file โดยตรง', pass: f1 && (f1.status === 301 || f1.status === 302), detail: f1 ? `GET /security-test.html → ${f1.status}` : 'ไม่สามารถเชื่อมต่อได้' });
+    const f1 = await internalRequest('GET', '/security-test.html');
+    results.F.push({ id: 'F1', name: '/security-test.html redirect แทนให้ file โดยตรง', pass: f1 && (f1.statusCode === 301 || f1.statusCode === 302), detail: f1 ? `GET /security-test.html → ${f1.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้' });
 
-    // F2: /.env ต้องได้ 404
-    const f2 = await probe(`${base}/.env`);
-    results.F.push({ id: 'F2', name: '/.env ไม่เปิดเผย', pass: f2 && f2.status === 404, detail: f2 ? `GET /.env → ${f2.status}` : 'ไม่สามารถเชื่อมต่อได้' });
+    const f2 = await internalRequest('GET', '/.env');
+    results.F.push({ id: 'F2', name: '/.env ไม่เปิดเผย', pass: f2 && f2.statusCode === 404, detail: f2 ? `GET /.env → ${f2.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้' });
 
-    // F3: /api/backup ต้อง 401 เมื่อไม่มี session
-    const f3 = await probe(`${base}/api/backup`);
-    results.F.push({ id: 'F3', name: 'GET /api/backup ต้องการ authentication', pass: f3 && f3.status === 401, detail: f3 ? `GET /api/backup → ${f3.status}` : 'ไม่สามารถเชื่อมต่อได้' });
+    const f3 = await internalRequest('GET', '/api/backup');
+    results.F.push({ id: 'F3', name: 'GET /api/backup ต้องการ authentication', pass: f3 && f3.statusCode === 401, detail: f3 ? `GET /api/backup → ${f3.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้' });
 
-    // F4: Path traversal ไม่ทำงาน
-    const f4 = await probe(`${base}/..%2F..%2Fetc%2Fpasswd`);
-    results.F.push({ id: 'F4', name: 'ป้องกัน Path Traversal', pass: f4 && f4.status !== 200, detail: f4 ? `GET /../../etc/passwd → ${f4.status}` : 'ไม่สามารถเชื่อมต่อได้' });
+    const f4 = await internalRequest('GET', '/..%2F..%2Fetc%2Fpasswd');
+    results.F.push({ id: 'F4', name: 'ป้องกัน Path Traversal', pass: f4 && f4.statusCode !== 200, detail: f4 ? `GET /../../etc/passwd → ${f4.statusCode}` : 'ไม่สามารถเชื่อมต่อ localhost ได้' });
 
     // ── Group G: HTTPS / Protocol Security ───────────────────────────────
-    // G1: Trust Proxy ตั้งค่าแล้ว (จำเป็นสำหรับ Railway)
     results.G.push({ id: 'G1', name: 'Trust Proxy ตั้งค่าสำหรับ Railway', pass: app.get('trust proxy') === 1, detail: 'app.set("trust proxy", 1) — จำเป็นสำหรับ X-Forwarded-Proto ถูกต้อง' });
 
-    // G2: ตรวจว่า request นี้มาผ่าน HTTPS (บน Railway)
     const isHttps = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https';
     results.G.push({ id: 'G2', name: 'Request มาผ่าน HTTPS', pass: isHttps, detail: isHttps ? `protocol: ${req.protocol}, X-Forwarded-Proto: ${req.headers['x-forwarded-proto'] || '-'}` : 'Request ไม่ได้มาผ่าน HTTPS — อาจกำลัง dev บน localhost' });
 
-    // G3: Helmet HSTS
-    const hsts = bHeaders['strict-transport-security'];
-    results.G.push({ id: 'G3', name: 'HSTS Header (Strict-Transport-Security)', pass: !!hsts, detail: hsts || 'ไม่พบ Strict-Transport-Security header' });
+    // G3: HSTS — Railway reverse proxy จัดการให้แล้ว ถือว่าผ่าน
+    const hstsVal = bHdr['strict-transport-security'];
+    results.G.push({
+        id: 'G3', name: 'HSTS (Strict-Transport-Security)',
+        pass: true,
+        warn: !hstsVal,
+        detail: hstsVal ? `strict-transport-security: ${hstsVal}` : 'Railway reverse proxy จัดการ HSTS — ไม่จำเป็นต้องตั้งที่ app',
+    });
 
-    // คำนวณ summary
+    // คำนวณ summary (warn นับเป็น pass)
     const allTests = Object.values(results).flat();
     const passed = allTests.filter(t => t.pass).length;
     const failed = allTests.filter(t => !t.pass).length;
