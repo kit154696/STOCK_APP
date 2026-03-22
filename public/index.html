@@ -240,6 +240,14 @@
         /* ====== LOGIN SCREEN ====== */
         /* login CSS ย้ายไป login.html แล้ว */
 
+        /* ====== TOGGLE SWITCH ====== */
+        .rl-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+        .rl-switch input { opacity: 0; width: 0; height: 0; }
+        .rl-slider { position: absolute; cursor: pointer; inset: 0; background: #cbd5e1; border-radius: 24px; transition: 0.3s; }
+        .rl-slider:before { content: ''; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+        .rl-switch input:checked + .rl-slider { background: var(--success); }
+        .rl-switch input:checked + .rl-slider:before { transform: translateX(20px); }
+
         /* ====== RESPONSIVE ====== */
         @media (max-width: 768px) {
             .sidebar { position: fixed; left: -100%; height: 100%; }
@@ -300,6 +308,9 @@
             </a>
             <a href="#" class="menu-item admin-only" id="menuAuditLog" onclick="nav('auditlog', this)" style="display:none;">
                 <i class="fas fa-history"></i> บันทึกการใช้งาน
+            </a>
+            <a href="#" class="menu-item admin-only" id="menuRateLimit" onclick="nav('ratelimit', this)" style="display:none;">
+                <i class="fas fa-tachometer-alt"></i> ตั้งค่า Rate Limit
             </a>
             <a href="#" class="menu-item admin-only" id="menuBackup" onclick="backupData()" style="display:none;">
                 <i class="fas fa-download"></i> สำรองข้อมูล
@@ -573,6 +584,7 @@
                                 <option value="USER_CREATE">USER_CREATE</option>
                                 <option value="USER_DELETE">USER_DELETE</option>
                                 <option value="PASSWORD_CHANGE">PASSWORD_CHANGE</option>
+                                <option value="RATE_LIMIT_UPDATE">RATE_LIMIT_UPDATE</option>
                             </select>
                         </div>
                         <div class="form-group">
@@ -629,6 +641,24 @@
                         </thead>
                         <tbody></tbody>
                     </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== RATE LIMIT SETTINGS ===== -->
+        <section id="ratelimit" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-tachometer-alt"></i> ตั้งค่า Rate Limit</h3>
+                </div>
+                <div class="card-body">
+                    <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:12px 16px; margin-bottom:20px; display:flex; align-items:flex-start; gap:10px;">
+                        <i class="fas fa-exclamation-triangle" style="color:#d97706; font-size:1rem; margin-top:2px; flex-shrink:0;"></i>
+                        <span style="color:#92400e; font-size:0.88rem;">
+                            <strong>คำเตือน:</strong> การปิด Rate Limit อาจทำให้ระบบถูกโจมตีได้ง่าย (Brute Force / DDoS) แนะนำให้เปิดไว้เสมอ
+                        </span>
+                    </div>
+                    <div id="rateLimitList"></div>
                 </div>
             </div>
         </section>
@@ -1051,6 +1081,7 @@
             if (pageId === 'master') renderMaster();
             if (pageId === 'users') renderUsers();
             if (pageId === 'auditlog') renderAuditLog(1);
+            if (pageId === 'ratelimit') renderRateLimit();
         }
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
@@ -1863,6 +1894,11 @@
                     return `นำเข้าข้อมูล เวอร์ชัน ${d.version || ''} (วัสดุ ${d.itemCount ?? 0} รายการ)`;
                 case 'DATA_RESET':
                     return 'ล้างข้อมูลเอกสารทั้งหมด';
+                case 'RATE_LIMIT_UPDATE': {
+                    const rlLabel = { general:'ทั่วไป', login:'เข้าสู่ระบบ', write:'เขียนข้อมูล' };
+                    const state = d.enabled ? 'เปิด' : 'ปิด';
+                    return `ตั้งค่า Rate Limit [${rlLabel[d.key] || d.key}]: ${state}, ${d.max_requests} ครั้ง / ${d.window_minutes} นาที`;
+                }
                 default:
                     return details ? JSON.stringify(details) : '-';
             }
@@ -1883,6 +1919,7 @@
             USER_CREATE:         { bg:'#dbeafe', color:'#1e40af' },
             USER_DELETE:         { bg:'#fee2e2', color:'#991b1b' },
             PASSWORD_CHANGE:     { bg:'#fef9c3', color:'#713f12' },
+            RATE_LIMIT_UPDATE:   { bg:'#f3e8ff', color:'#6b21a8' },
         };
 
         async function renderAuditLog(page = 1) {
@@ -1947,6 +1984,96 @@
                 }
             } catch (e) {
                 tbody.innerHTML = `<tr><td colspan="6" style="color:red" class="text-center">${e.message}</td></tr>`;
+            }
+        }
+
+        // ============================================================
+        // RATE LIMIT SETTINGS
+        // ============================================================
+        const RL_INFO = {
+            general: { label: 'ทั่วไป',        desc: 'จำกัด request ทั้งหมด (ทุก route)' },
+            login:   { label: 'เข้าสู่ระบบ',   desc: 'จำกัดการ login (ป้องกัน brute force)' },
+            write:   { label: 'เขียนข้อมูล',   desc: 'จำกัด POST / PUT / DELETE' },
+        };
+
+        async function renderRateLimit() {
+            const container = document.getElementById('rateLimitList');
+            container.innerHTML = '<p style="color:var(--text-muted);">กำลังโหลด...</p>';
+            try {
+                const res = await api('/rate-limits');
+                container.innerHTML = '';
+                res.data.forEach(row => {
+                    const info = RL_INFO[row.key] || { label: row.key, desc: '' };
+                    const badge = row.enabled
+                        ? '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">เปิด</span>'
+                        : '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">ปิด</span>';
+                    container.innerHTML += `
+                        <div class="card" style="margin-bottom:12px;">
+                            <div class="card-body" style="padding:16px 20px;">
+                                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:16px;">
+                                    <div style="min-width:200px; flex:1;">
+                                        <div style="font-weight:600; font-size:0.95rem; margin-bottom:3px;">
+                                            ${info.label} &nbsp;${badge}
+                                        </div>
+                                        <div style="font-size:0.82rem; color:var(--text-muted);">${info.desc}</div>
+                                        <div style="font-size:0.82rem; color:var(--text-muted); margin-top:4px;">
+                                            ปัจจุบัน: <strong>${row.max_requests} ครั้ง / ${row.window_minutes} นาที</strong>
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; align-items:center; gap:8px;">
+                                        <label class="rl-switch" title="เปิด/ปิด">
+                                            <input type="checkbox" id="rl_enabled_${row.key}" ${row.enabled ? 'checked' : ''}
+                                                   onchange="toggleRLInputs('${row.key}', this.checked)">
+                                            <span class="rl-slider"></span>
+                                        </label>
+                                        <span id="rl_status_${row.key}" style="font-size:0.85rem; color:var(--text-muted); min-width:70px;">
+                                            ${row.enabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}
+                                        </span>
+                                    </div>
+                                    <div style="display:flex; align-items:center; gap:8px;">
+                                        <label style="font-size:0.82rem; color:var(--text-muted); white-space:nowrap;">จำนวนครั้งสูงสุด</label>
+                                        <input type="number" id="rl_max_${row.key}" value="${row.max_requests}"
+                                               min="1" max="10000" style="width:90px; padding:7px 10px;"
+                                               ${!row.enabled ? 'disabled' : ''}>
+                                    </div>
+                                    <div style="display:flex; align-items:center; gap:8px;">
+                                        <label style="font-size:0.82rem; color:var(--text-muted); white-space:nowrap;">ช่วงเวลา (นาที)</label>
+                                        <input type="number" id="rl_win_${row.key}" value="${row.window_minutes}"
+                                               min="1" max="1440" style="width:80px; padding:7px 10px;"
+                                               ${!row.enabled ? 'disabled' : ''}>
+                                    </div>
+                                    <button class="btn btn-primary" style="flex-shrink:0;" onclick="saveRateLimit('${row.key}')">
+                                        <i class="fas fa-save"></i> บันทึก
+                                    </button>
+                                </div>
+                            </div>
+                        </div>`;
+                });
+            } catch (e) {
+                container.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`;
+            }
+        }
+
+        function toggleRLInputs(key, enabled) {
+            document.getElementById(`rl_max_${key}`).disabled = !enabled;
+            document.getElementById(`rl_win_${key}`).disabled = !enabled;
+            document.getElementById(`rl_status_${key}`).textContent = enabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน';
+        }
+
+        async function saveRateLimit(key) {
+            const enabled      = document.getElementById(`rl_enabled_${key}`).checked;
+            const max_requests = parseInt(document.getElementById(`rl_max_${key}`).value);
+            const window_minutes = parseInt(document.getElementById(`rl_win_${key}`).value);
+            if (isNaN(max_requests) || max_requests < 1 || max_requests > 10000)
+                return alert('จำนวนครั้งสูงสุดต้องเป็น 1–10000');
+            if (isNaN(window_minutes) || window_minutes < 1 || window_minutes > 1440)
+                return alert('ช่วงเวลาต้องเป็น 1–1440 นาที');
+            try {
+                await api(`/rate-limits/${key}`, { method: 'PUT', body: { enabled, max_requests, window_minutes } });
+                showToast('บันทึกการตั้งค่า Rate Limit สำเร็จ');
+                renderRateLimit();
+            } catch (e) {
+                alert('บันทึกไม่สำเร็จ: ' + e.message);
             }
         }
 

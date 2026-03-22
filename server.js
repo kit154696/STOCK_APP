@@ -11,6 +11,7 @@ const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const {
     sanitize,
@@ -131,6 +132,51 @@ app.use(cors({
     allowedHeaders: ['Content-Type'],
 }));
 
+// ============================
+// DYNAMIC RATE LIMITER
+// ============================
+// Cache ค่าใน memory (โหลดจาก DB ตอน startup)
+const rateLimitCache = {
+    general: { enabled: true, max_requests: 300, window_minutes: 15 },
+    login:   { enabled: true, max_requests: 50,  window_minutes: 15 },
+    write:   { enabled: true, max_requests: 200, window_minutes: 15 },
+};
+const limiters = {};  // เก็บ instance ของ rateLimit แต่ละ key
+
+function buildLimiter(key) {
+    const s = rateLimitCache[key];
+    const opts = {
+        windowMs: s.window_minutes * 60 * 1000,
+        max: s.max_requests,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.ip || 'unknown',
+        message: { success: false, error: 'คำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่' },
+    };
+    if (key === 'login') opts.skipSuccessfulRequests = true;
+    limiters[key] = rateLimit(opts);
+}
+
+/** Middleware ที่ตรวจ cache ก่อนว่า enabled หรือไม่ */
+function dynamicLimiter(key) {
+    return (req, res, next) => {
+        const s = rateLimitCache[key];
+        if (!s || !s.enabled) return next();
+        if (!limiters[key]) buildLimiter(key);
+        return limiters[key](req, res, next);
+    };
+}
+
+// ใช้งาน limiters
+app.use(dynamicLimiter('general'));                      // ทุก route
+
+// write: POST/PUT/DELETE ยกเว้น /api/login
+app.use((req, res, next) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.path !== '/api/login')
+        return dynamicLimiter('write')(req, res, next);
+    next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -174,7 +220,7 @@ app.use('/api', (req, res, next) => {
 // ============================
 // API: Auth
 // ============================
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', dynamicLimiter('login'), async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password)
@@ -868,6 +914,56 @@ app.post('/api/reset', checkAdmin, async (req, res) => {
 });
 
 // ============================
+// API: Rate Limit Settings (Admin only)
+// ============================
+app.get('/api/rate-limits', checkAdmin, async (req, res) => {
+    try {
+        const result = await query('SELECT * FROM rate_limit_settings ORDER BY key');
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.put('/api/rate-limits/:key', checkAdmin, async (req, res) => {
+    const key = req.params.key;
+    if (!['general', 'login', 'write'].includes(key))
+        return res.status(400).json({ success: false, error: 'key ไม่ถูกต้อง (general, login, write)' });
+
+    const { enabled, max_requests, window_minutes } = req.body;
+
+    if (typeof enabled !== 'boolean')
+        return res.status(400).json({ success: false, error: 'enabled ต้องเป็น boolean' });
+
+    const max = parseInt(max_requests);
+    const win = parseInt(window_minutes);
+    if (isNaN(max) || max < 1 || max > 10000)
+        return res.status(400).json({ success: false, error: 'max_requests ต้องเป็น 1–10000' });
+    if (isNaN(win) || win < 1 || win > 1440)
+        return res.status(400).json({ success: false, error: 'window_minutes ต้องเป็น 1–1440' });
+
+    try {
+        await query(
+            `UPDATE rate_limit_settings SET enabled=$1, max_requests=$2, window_minutes=$3, updated_at=NOW() WHERE key=$4`,
+            [enabled, max, win, key]
+        );
+        // อัปเดต cache และ rebuild limiter ทันที
+        rateLimitCache[key] = { enabled, max_requests: max, window_minutes: win };
+        buildLimiter(key);
+
+        auditLog({
+            userId: req.session.user.id, username: req.session.user.username,
+            action: 'RATE_LIMIT_UPDATE', resource: 'rate_limits', resourceId: key,
+            details: { key, enabled, max_requests: max, window_minutes: win },
+            ip: getIp(req),
+        });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================
 // API: Keep-Alive (ต่ออายุ session)
 // ============================
 app.post('/api/keep-alive', (req, res) => {
@@ -944,6 +1040,43 @@ async function autoInit() {
             "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
             ['orgName', 'องค์การบริหารส่วนตำบลตัวอย่าง']
         );
+
+        // ตารางตั้งค่า Rate Limit
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS rate_limit_settings (
+                id SERIAL PRIMARY KEY,
+                key TEXT UNIQUE NOT NULL,
+                enabled BOOLEAN DEFAULT true,
+                max_requests INTEGER DEFAULT 100,
+                window_minutes INTEGER DEFAULT 15,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        const rlDefaults = [
+            ['general', true, 300, 15],
+            ['login',   true,  50, 15],
+            ['write',   true, 200, 15],
+        ];
+        for (const [key, enabled, max, win] of rlDefaults) {
+            await pool.query(
+                `INSERT INTO rate_limit_settings (key, enabled, max_requests, window_minutes)
+                 VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO NOTHING`,
+                [key, enabled, max, win]
+            );
+        }
+
+        // โหลดค่าจาก DB เข้า memory cache
+        const rlRows = await pool.query('SELECT * FROM rate_limit_settings');
+        rlRows.rows.forEach(row => {
+            rateLimitCache[row.key] = {
+                enabled: row.enabled,
+                max_requests: row.max_requests,
+                window_minutes: row.window_minutes,
+            };
+            buildLimiter(row.key);
+        });
+        console.log('✅ โหลด Rate Limit settings สำเร็จ');
+
     } catch (err) {
         console.error('❌ Auto-init error:', err.message);
     }
