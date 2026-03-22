@@ -93,6 +93,7 @@ app.use(helmet({
                 "'unsafe-inline'",          // inline JS ใน index.html / login.html
                 'https://cdn.jsdelivr.net', // Chart.js, xlsx
             ],
+            scriptSrcAttr: ["'unsafe-inline'"],  // อนุญาต onclick/onchange inline handlers
             styleSrc: [
                 "'self'",
                 "'unsafe-inline'",
