@@ -11,7 +11,7 @@ const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+
 const {
     sanitize,
     isPositiveInt,
@@ -131,51 +131,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type'],
 }));
 
-// ===== Rate Limiters =====
-// 1. ทั่วไป: 300 req / 15 นาที / IP
-const generalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 300,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { success: false, error: 'คำขอมากเกินไป กรุณารอ 15 นาทีแล้วลองใหม่' },
-});
-
-// 2. Login: 10 ครั้ง / 15 นาที / IP (ป้องกัน brute force)
-const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skipSuccessfulRequests: true, // นับเฉพาะ request ที่ fail (login ผิด)
-    handler: (req, res) => {
-        // ถ้าเป็น browser (Accept: text/html) ให้ redirect กลับ /login พร้อม error
-        if (req.headers.accept && req.headers.accept.includes('text/html')) {
-            return res.redirect('/login?error=rate_limit');
-        }
-        res.status(429).json({ success: false, error: 'ลองเข้าสู่ระบบผิดพลาดหลายครั้ง กรุณารอ 15 นาทีแล้วลองใหม่' });
-    },
-});
-
-// 3. เขียนข้อมูล (POST/PUT/DELETE): 30 req / 15 นาที / IP
-const writeLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 30,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { success: false, error: 'บันทึกข้อมูลถี่เกินไป กรุณารอ 15 นาทีแล้วลองใหม่' },
-});
-
-app.use(generalLimiter);
-
-// writeLimiter ใช้กับทุก POST/PUT/DELETE (ยกเว้น login ที่มี loginLimiter เข้มงวดกว่าอยู่แล้ว)
-app.use((req, res, next) => {
-    if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.path !== '/api/login') {
-        return writeLimiter(req, res, next);
-    }
-    next();
-});
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -219,7 +174,7 @@ app.use('/api', (req, res, next) => {
 // ============================
 // API: Auth
 // ============================
-app.post('/api/login', loginLimiter, async (req, res) => {
+app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password)
