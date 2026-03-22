@@ -1,6 +1,6 @@
 /**
  * server.js - Backend API สำหรับระบบบัญชีคุมวัสดุ อปท.
- * ใช้ Express + PostgreSQL + bcrypt + express-session
+ * ใช้ Express + PostgreSQL + bcrypt + express-session + helmet + rate-limit
  */
 require('dotenv').config();
 const express = require('express');
@@ -10,10 +10,15 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BCRYPT_ROUNDS = 10;
+
+// ===== Trust Proxy (Railway อยู่หลัง reverse proxy) =====
+app.set('trust proxy', 1);
 
 // ===== PostgreSQL Connection Pool =====
 const pool = new Pool({
@@ -34,6 +39,95 @@ async function query(sql, params = []) {
     return pool.query(sql, params);
 }
 
+// ===== Security Headers (Helmet) =====
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+                "'self'",
+                "'unsafe-inline'",          // inline JS ใน index.html / login.html
+                'https://cdn.jsdelivr.net', // Chart.js, xlsx
+            ],
+            styleSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                'https://fonts.googleapis.com',
+                'https://cdnjs.cloudflare.com',
+            ],
+            fontSrc: [
+                "'self'",
+                'https://fonts.gstatic.com',
+                'https://cdnjs.cloudflare.com',
+            ],
+            imgSrc: ["'self'", 'data:'],
+            connectSrc: ["'self'"],
+            frameSrc: ["'none'"],
+            objectSrc: ["'none'"],
+        },
+    },
+    crossOriginEmbedderPolicy: false, // ปิดเพื่อให้โหลด CDN ได้ปกติ
+}));
+
+// ===== CORS =====
+const rawOrigins = process.env.ALLOWED_ORIGINS || '';
+const allowedOrigins = rawOrigins
+    ? rawOrigins.split(',').map(o => o.trim()).filter(Boolean)
+    : [];  // ถ้าไม่ตั้ง จะใช้โหมด same-origin (ไม่อนุญาต cross-origin)
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // อนุญาตถ้า same-origin (origin = undefined) หรืออยู่ใน allowedOrigins
+        if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+        callback(new Error(`CORS: origin "${origin}" ไม่ได้รับอนุญาต`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+}));
+
+// ===== Rate Limiters =====
+// 1. ทั่วไป: 100 req / 15 นาที / IP
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'คำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่' },
+});
+
+// 2. Login: 5 ครั้ง / 15 นาที / IP (ป้องกัน brute force)
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'ลองเข้าสู่ระบบผิดพลาดหลายครั้ง กรุณารอ 15 นาทีแล้วลองใหม่' },
+    skipSuccessfulRequests: true, // นับเฉพาะ request ที่ fail (login ผิด)
+});
+
+// 3. เขียนข้อมูล (POST/PUT/DELETE): 30 req / 15 นาที / IP
+const writeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'บันทึกข้อมูลถี่เกินไป กรุณารอสักครู่แล้วลองใหม่' },
+});
+
+app.use(generalLimiter);
+
+// writeLimiter ใช้กับทุก POST/PUT/DELETE (ยกเว้น login ที่มี loginLimiter เข้มงวดกว่าอยู่แล้ว)
+app.use((req, res, next) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.path !== '/api/login') {
+        return writeLimiter(req, res, next);
+    }
+    next();
+});
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
 // ===== Session Middleware =====
 app.use(session({
     store: new pgSession({
@@ -46,13 +140,10 @@ app.use(session({
     cookie: {
         httpOnly: true,
         sameSite: 'strict',
+        secure: process.env.NODE_ENV === 'production',
         maxAge: 8 * 60 * 60 * 1000  // 8 ชั่วโมง
     }
 }));
-
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
 
 // ============================
 // AUTH MIDDLEWARE
@@ -76,7 +167,7 @@ app.use('/api', (req, res, next) => {
 // ============================
 // API: Auth
 // ============================
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password)
