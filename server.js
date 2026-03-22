@@ -778,25 +778,32 @@ app.get('/api/next-docno', async (req, res) => {
 });
 
 // ============================
+// Helper: รวบรวมข้อมูลทั้งหมดสำหรับ backup
+// ============================
+async function collectBackupData() {
+    const [settings, items, transactions, txLines] = await Promise.all([
+        query('SELECT * FROM settings'),
+        query('SELECT * FROM items'),
+        query('SELECT * FROM transactions'),
+        query('SELECT * FROM transaction_lines'),
+    ]);
+    return {
+        settings: settings.rows,
+        items: items.rows,
+        transactions: transactions.rows,
+        transaction_lines: txLines.rows,
+        exportDate: new Date().toISOString(),
+        version: 'PG_V1',
+    };
+}
+
+// ============================
 // API: Backup / Restore / Reset (Admin only)
 // ============================
 app.get('/api/backup', checkAdmin, async (req, res) => {
     try {
-        const [settings, items, transactions, txLines] = await Promise.all([
-            query('SELECT * FROM settings'),
-            query('SELECT * FROM items'),
-            query('SELECT * FROM transactions'),
-            query('SELECT * FROM transaction_lines')
-        ]);
-        const payload = {
-            settings: settings.rows,
-            items: items.rows,
-            transactions: transactions.rows,
-            transaction_lines: txLines.rows,
-            exportDate: new Date().toISOString(),
-            version: 'PG_V1'
-        };
-        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_BACKUP', resource: 'backup', details: { itemCount: items.rows.length, txCount: transactions.rows.length }, ip: getIp(req) });
+        const payload = await collectBackupData();
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_BACKUP', resource: 'backup', details: { itemCount: payload.items.length, txCount: payload.transactions.length }, ip: getIp(req) });
         res.json({ success: true, data: payload });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -811,20 +818,7 @@ app.post('/api/restore', checkAdmin, async (req, res) => {
         const { data } = req.body;
 
         // Auto-backup ข้อมูลปัจจุบันก่อน restore
-        const [bkSettings, bkItems, bkTx, bkLines] = await Promise.all([
-            query('SELECT * FROM settings'),
-            query('SELECT * FROM items'),
-            query('SELECT * FROM transactions'),
-            query('SELECT * FROM transaction_lines'),
-        ]);
-        const autoBackup = {
-            settings: bkSettings.rows,
-            items: bkItems.rows,
-            transactions: bkTx.rows,
-            transaction_lines: bkLines.rows,
-            exportDate: new Date().toISOString(),
-            version: 'PG_V1',
-        };
+        const autoBackup = await collectBackupData();
 
         await client.query('BEGIN');
         await client.query('DELETE FROM transaction_lines');
@@ -865,6 +859,83 @@ app.post('/api/restore', checkAdmin, async (req, res) => {
         await client.query('COMMIT');
         auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESTORE', resource: 'restore', details: { version: data.version, itemCount: data.items.length }, ip: getIp(req) });
         res.json({ success: true, message: 'นำเข้าข้อมูลสำเร็จ', autoBackup });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// ============================
+// API: Auto Backups (Admin only)
+// ============================
+app.get('/api/auto-backups', checkAdmin, async (req, res) => {
+    try {
+        const rows = await pool.query(
+            `SELECT id, created_at,
+                    (data->>'exportDate') AS export_date,
+                    jsonb_array_length(data->'items') AS item_count,
+                    jsonb_array_length(data->'transactions') AS tx_count
+             FROM auto_backups ORDER BY created_at DESC`
+        );
+        res.json({ success: true, backups: rows.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/auto-backups/:id/restore', checkAdmin, async (req, res) => {
+    const { id } = req.params;
+    if (!isPositiveInt(id)) return res.status(400).json({ success: false, error: 'ID ไม่ถูกต้อง' });
+    const client = await pool.connect();
+    try {
+        const row = await pool.query('SELECT data FROM auto_backups WHERE id = $1', [id]);
+        if (row.rows.length === 0) return res.status(404).json({ success: false, error: 'ไม่พบ backup นี้' });
+        const data = row.rows[0].data;
+
+        // snapshot ข้อมูลปัจจุบันก่อน restore
+        const autoBackup = await collectBackupData();
+
+        await client.query('BEGIN');
+        await client.query('DELETE FROM transaction_lines');
+        await client.query('DELETE FROM transactions');
+        await client.query('DELETE FROM items');
+        await client.query('DELETE FROM settings');
+
+        for (const s of data.settings) {
+            await client.query('INSERT INTO settings (key, value) VALUES ($1, $2)', [s.key, s.value]);
+        }
+        for (const i of data.items) {
+            await client.query(
+                `INSERT INTO items (id, code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                [i.id, i.code, i.name, i.spec, i.cat_code, i.cat_name, i.unit, i.min_qty, i.location, i.last_price]
+            );
+        }
+        await client.query(`SELECT setval('items_id_seq', (SELECT COALESCE(MAX(id),0) FROM items))`);
+
+        for (const t of data.transactions) {
+            await client.query(
+                `INSERT INTO transactions (id, date, type, doc_no, ref, note, user_name, approver, checker)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                [t.id, t.date, t.type, t.doc_no, t.ref, t.note, t.user_name, t.approver, t.checker]
+            );
+        }
+        await client.query(`SELECT setval('transactions_id_seq', (SELECT COALESCE(MAX(id),0) FROM transactions))`);
+
+        for (const l of data.transaction_lines) {
+            await client.query(
+                `INSERT INTO transaction_lines (id, tx_id, item_id, code, name, spec, unit, qty, price)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                [l.id, l.tx_id, l.item_id, l.code, l.name, l.spec, l.unit, l.qty, l.price]
+            );
+        }
+        await client.query(`SELECT setval('transaction_lines_id_seq', (SELECT COALESCE(MAX(id),0) FROM transaction_lines))`);
+
+        await client.query('COMMIT');
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESTORE', resource: 'auto_backup', resourceId: String(id), details: { source: 'auto_backup', itemCount: data.items?.length ?? 0 }, ip: getIp(req) });
+        res.json({ success: true, message: 'กู้คืนข้อมูลสำเร็จ', autoBackup });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: err.message });
@@ -1083,8 +1154,38 @@ async function autoInit() {
         });
         console.log('✅ โหลด Rate Limit settings สำเร็จ');
 
+        // ตารางเก็บ auto backups
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS auto_backups (
+                id SERIAL PRIMARY KEY,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+        console.log('✅ ตาราง auto_backups พร้อม');
+
     } catch (err) {
         console.error('❌ Auto-init error:', err.message);
+    }
+}
+
+// ============================
+// Auto-Backup Scheduler (ทุก 24 ชั่วโมง)
+// ============================
+async function runAutoBackup() {
+    try {
+        const data = await collectBackupData();
+        await pool.query('INSERT INTO auto_backups (data) VALUES ($1)', [JSON.stringify(data)]);
+        // เก็บไว้เฉพาะ 7 รายการล่าสุด
+        await pool.query(`
+            DELETE FROM auto_backups
+            WHERE id NOT IN (
+                SELECT id FROM auto_backups ORDER BY created_at DESC LIMIT 7
+            )
+        `);
+        console.log(`✅ Auto-backup สำเร็จ (${new Date().toLocaleString('th-TH')}) — items: ${data.items.length}, tx: ${data.transactions.length}`);
+    } catch (err) {
+        console.error('❌ Auto-backup error:', err.message);
     }
 }
 
@@ -1329,6 +1430,11 @@ autoInit().then(() => {
         console.log('╚══════════════════════════════════════════════════╝');
         console.log('');
     });
+
+    // รัน backup ครั้งแรกหลัง server start แล้ว schedule ทุก 24 ชั่วโมง
+    runAutoBackup();
+    setInterval(runAutoBackup, 24 * 60 * 60 * 1000);
+    console.log('⏰ Auto-backup scheduler เริ่มแล้ว (ทุก 24 ชั่วโมง, เก็บ 7 วันล่าสุด)');
 });
 
 process.on('SIGINT', async () => {
