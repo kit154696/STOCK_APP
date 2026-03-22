@@ -1812,6 +1812,62 @@
         // ============================================================
         // AUDIT LOG
         // ============================================================
+        const RESOURCE_TH = {
+            auth:         'ระบบยืนยันตัวตน',
+            items:        'วัสดุ',
+            transactions: 'เอกสาร',
+            settings:     'ตั้งค่า',
+            users:        'ผู้ใช้',
+            backup:       'สำรองข้อมูล',
+            restore:      'นำเข้าข้อมูล',
+        };
+
+        function formatAuditDetails(action, details, resourceId) {
+            const d = details || {};
+            const rid = resourceId || '';
+            const roleMap = { admin: 'ผู้ดูแล', user: 'เจ้าหน้าที่' };
+            const typeMap = { IN: 'รับเข้า', OUT: 'เบิกจ่าย' };
+            switch (action) {
+                case 'LOGIN_SUCCESS':
+                case 'LOGIN_FAILED':
+                    return '-';
+                case 'SETTINGS_UPDATE':
+                    return d.key === 'orgName'
+                        ? `เปลี่ยนชื่อหน่วยงานเป็น: ${d.value || ''}`
+                        : `เปลี่ยนค่า ${d.key || ''} เป็น: ${d.value || ''}`;
+                case 'TRANSACTION_CREATE': {
+                    const typeTH = typeMap[d.type] || d.type || '';
+                    return `สร้างเอกสาร ${d.doc_no || ''} (${typeTH}, ${d.lineCount || 0} รายการ)`;
+                }
+                case 'TRANSACTION_DELETE':
+                    return `ลบเอกสาร #${rid}`;
+                case 'ITEM_CREATE':
+                    return `เพิ่มวัสดุ: ${d.name || ''} (รหัส: ${d.code || ''})`;
+                case 'ITEM_UPDATE':
+                    return `แก้ไขวัสดุ: ${d.name || ''} (รหัส: ${d.code || ''})`;
+                case 'ITEM_DELETE':
+                    return `ลบวัสดุ #${rid}`;
+                case 'USER_CREATE': {
+                    const roleTH = roleMap[d.role] || d.role || '';
+                    return `สร้างผู้ใช้: ${d.newUsername || ''} (สิทธิ์: ${roleTH})`;
+                }
+                case 'USER_DELETE':
+                    return `ลบผู้ใช้: ${d.deletedUsername || ''}`;
+                case 'PASSWORD_CHANGE':
+                    return d.changedBy
+                        ? `เปลี่ยนรหัสผ่าน โดย: ${d.changedBy}`
+                        : 'เปลี่ยนรหัสผ่าน';
+                case 'DATA_BACKUP':
+                    return `สำรองข้อมูล (วัสดุ ${d.itemCount ?? 0} รายการ, เอกสาร ${d.txCount ?? 0} รายการ)`;
+                case 'DATA_RESTORE':
+                    return `นำเข้าข้อมูล เวอร์ชัน ${d.version || ''} (วัสดุ ${d.itemCount ?? 0} รายการ)`;
+                case 'DATA_RESET':
+                    return 'ล้างข้อมูลเอกสารทั้งหมด';
+                default:
+                    return details ? JSON.stringify(details) : '-';
+            }
+        }
+
         const ACTION_COLORS = {
             LOGIN_SUCCESS:       { bg:'#dcfce7', color:'#166534' },
             LOGIN_FAILED:        { bg:'#fee2e2', color:'#991b1b' },
@@ -1852,15 +1908,16 @@
                 } else {
                     res.data.forEach(row => {
                         const c = ACTION_COLORS[row.action] || { bg:'#f1f3f7', color:'#374151' };
-                        const badge = `<span style="background:${c.bg};color:${c.color};padding:2px 8px;border-radius:10px;font-size:0.78rem;font-weight:600;white-space:nowrap;">${row.action}</span>`;
-                        const ts    = new Date(row.timestamp).toLocaleString('th-TH', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
-                        const det   = row.details ? `<span style="font-family:monospace;font-size:0.8rem;color:var(--text-muted);">${JSON.stringify(row.details)}</span>` : '-';
+                        const badge    = `<span style="background:${c.bg};color:${c.color};padding:2px 8px;border-radius:10px;font-size:0.78rem;font-weight:600;white-space:nowrap;">${row.action}</span>`;
+                        const ts       = new Date(row.timestamp).toLocaleString('th-TH', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+                        const det        = formatAuditDetails(row.action, row.details, row.resource_id);
+                        const resourceTH = RESOURCE_TH[row.resource] || row.resource || '-';
                         tbody.innerHTML += `
                             <tr>
                                 <td style="white-space:nowrap;">${ts}</td>
                                 <td><strong>${row.username || '-'}</strong></td>
                                 <td>${badge}</td>
-                                <td style="color:var(--text-muted);">${row.resource || '-'}${row.resource_id ? ` #${row.resource_id}` : ''}</td>
+                                <td style="color:var(--text-muted);">${resourceTH}</td>
                                 <td>${det}</td>
                                 <td style="font-family:monospace;font-size:0.82rem;color:var(--text-muted);">${row.ip_address || '-'}</td>
                             </tr>`;
