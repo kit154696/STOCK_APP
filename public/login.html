@@ -272,7 +272,7 @@
     </div>
 
     <script>
-        // Redirect ถ้า login อยู่แล้ว
+        // Redirect ถ้า login อยู่แล้ว + แสดง error จาก query string
         window.onload = async () => {
             try {
                 const res = await fetch('/api/me', { credentials: 'same-origin' });
@@ -281,6 +281,21 @@
                     if (data.success) window.location.href = '/';
                 }
             } catch(e) {}
+
+            // แสดง error ถ้ามี ?error= ใน URL
+            const params = new URLSearchParams(window.location.search);
+            const errCode = params.get('error');
+            if (errCode) {
+                const messages = {
+                    rate_limit: 'ลองเข้าสู่ระบบผิดพลาดหลายครั้งเกินไป กรุณารอ 15 นาทีแล้วลองใหม่',
+                };
+                const msg = messages[errCode] || 'เกิดข้อผิดพลาด กรุณาลองใหม่';
+                document.getElementById('errorMsg').textContent = msg;
+                document.getElementById('errorBox').classList.add('show');
+                // ลบ query string ออกจาก URL โดยไม่ reload
+                history.replaceState(null, '', '/login');
+            }
+
             document.getElementById('username').focus();
         };
 
