@@ -8,6 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         :root {
             --primary: #1a365d;
@@ -1445,30 +1446,98 @@
         // EXPORT EXCEL (คงเดิม)
         // ============================================================
         function exportReportToExcel() {
-            const reportTable = document.querySelector("#printArea table");
+            const printArea = document.getElementById('printArea');
+            const reportTable = printArea ? printArea.querySelector('table') : null;
             if (!reportTable) {
                 alert("กรุณากด 'แสดงรายงาน' ก่อนเพื่อเตรียมข้อมูลสำหรับส่งออก");
                 return;
             }
-            let csvContent = "\uFEFF";
-            const rows = reportTable.querySelectorAll("tr");
-            rows.forEach(row => {
-                const cols = row.querySelectorAll("th, td");
-                const rowData = Array.from(cols).map(col => {
-                    let data = col.innerText.replace(/"/g, '""');
-                    return `"${data}"`;
-                }).join(",");
-                csvContent += rowData + "\r\n";
+
+            const NUM_COLS = 7; // ลำดับ ประเภท รายการ จำนวน ราคา รวมเงิน หมายเหตุ
+            const aoa = []; // array of arrays
+
+            // --- ส่วน header (ชื่อรายงาน / วันที่ / ชื่อหน่วยงาน / แบบ อปท.วส) ---
+            const headerEl = printArea.querySelector('.doc-header');
+            if (headerEl) {
+                headerEl.innerText.split('\n').forEach(line => {
+                    const trimmed = line.trim();
+                    if (trimmed) aoa.push([trimmed]);
+                });
+            }
+            const subEl = printArea.querySelector('.doc-sub');
+            if (subEl) {
+                const sub = subEl.innerText.trim();
+                if (sub) aoa.push([sub]);
+            }
+            aoa.push([]); // แถวว่างคั่น
+
+            const headerRows = aoa.length; // นับแถว header ก่อนใส่ตาราง
+
+            // --- ส่วนตาราง ---
+            const tableRows = reportTable.querySelectorAll('tr');
+            tableRows.forEach(row => {
+                const cells = row.querySelectorAll('th, td');
+                aoa.push(Array.from(cells).map(c => {
+                    const txt = c.innerText.trim();
+                    // แปลงตัวเลขให้เป็น number type เพื่อให้ Excel จัดรูปแบบได้
+                    const num = parseFloat(txt.replace(/,/g, ''));
+                    return (!isNaN(num) && txt !== '') ? num : txt;
+                }));
             });
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.setAttribute("href", url);
-            link.setAttribute("download", `รายงานวัสดุคงเหลือ_${new Date().toISOString().split('T')[0]}.csv`);
-            link.style.visibility = 'hidden';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+
+            // --- ส่วนลายเซ็น ---
+            aoa.push([]);
+            const signDivs = printArea.querySelectorAll('div[style*="justify-content:space-between"]');
+            if (signDivs.length > 0) {
+                const lastSignDiv = signDivs[signDivs.length - 1];
+                const cols = lastSignDiv.querySelectorAll('div[style*="width:30%"]');
+                if (cols.length > 0) {
+                    const signRow = [];
+                    cols.forEach((col, idx) => {
+                        col.innerText.split('\n').forEach((line, li) => {
+                            if (!signRow[li]) signRow[li] = new Array(NUM_COLS).fill('');
+                            // วางลายเซ็นที่ col 0, 3, 6 (ห่างกัน 3 ช่อง)
+                            const colPos = idx * Math.floor((NUM_COLS - 1) / (cols.length - 1 || 1));
+                            signRow[li][colPos] = line.trim();
+                        });
+                    });
+                    signRow.forEach(r => aoa.push(r));
+                }
+            }
+
+            // --- สร้าง worksheet ---
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+            // กำหนดความกว้างคอลัมน์
+            ws['!cols'] = [
+                { wch: 8 },   // ลำดับ
+                { wch: 22 },  // ประเภท
+                { wch: 38 },  // รายการ
+                { wch: 10 },  // จำนวน
+                { wch: 14 },  // ราคา
+                { wch: 16 },  // รวมเงิน
+                { wch: 16 },  // หมายเหตุ
+            ];
+
+            // Merge เซลล์ header (แถว 0 ถึง headerRows-2 ให้ข้ามทั้งแถว)
+            ws['!merges'] = [];
+            for (let r = 0; r < headerRows - 1; r++) {
+                ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: NUM_COLS - 1 } });
+            }
+
+            // จัด alignment ให้เซลล์ header กึ่งกลาง
+            for (let r = 0; r < headerRows - 1; r++) {
+                const cellAddr = XLSX.utils.encode_cell({ r, c: 0 });
+                if (ws[cellAddr]) {
+                    ws[cellAddr].s = { alignment: { horizontal: 'center', vertical: 'center', wrapText: true } };
+                }
+            }
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'รายงานวัสดุ');
+
+            const dateStr = new Date().toISOString().split('T')[0];
+            XLSX.writeFile(wb, `รายงานวัสดุคงเหลือ_${dateStr}.xlsx`);
         }
     </script>
 </body>
