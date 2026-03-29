@@ -1,5 +1,5 @@
 /**
- * server.js - Backend API สำหรับระบบบัญชีคุมวัสดุ อปท.
+ * server.js - Backend API สำหรับระบบทะเบียนคุมวัสดุ
  * ใช้ Express + PostgreSQL + bcrypt + express-session + helmet + rate-limit
  */
 require('dotenv').config();
@@ -217,6 +217,17 @@ function checkAdmin(req, res, next) {
     return res.status(403).json({ success: false, error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
 }
 
+// Helper: ดึง org_id ของ user ปัจจุบัน (null = admin เห็นทั้งหมด)
+// Admin สามารถส่ง ?filter_org_id=X เพื่อกรองดูข้อมูลหน่วยงานใดหน่วยงานหนึ่งได้
+function getUserOrgId(req) {
+    if (!req.session || !req.session.user) return null;
+    if (req.session.user.role === 'admin') {
+        const filterOrgId = req.query && req.query.filter_org_id ? parseInt(req.query.filter_org_id) : null;
+        return !filterOrgId || isNaN(filterOrgId) ? null : filterOrgId;
+    }
+    return req.session.user.org_id || null;
+}
+
 // ป้องกันทุก /api/* ยกเว้น /login และ /logout
 app.use('/api', (req, res, next) => {
     if (req.path === '/login' || req.path === '/logout') return next();
@@ -243,12 +254,21 @@ app.post('/api/login', dynamicLimiter('login'), async (req, res) => {
             return res.status(401).json({ success: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
         }
 
-        req.session.user = { id: user.id, username: user.username, role: user.role };
+        // Get org info
+        let orgId = null, orgName = '';
+        if (user.org_id) {
+            const orgRow = await query('SELECT id, name FROM organizations WHERE id = $1', [user.org_id]);
+            if (orgRow.rows.length > 0) {
+                orgId = orgRow.rows[0].id;
+                orgName = orgRow.rows[0].name;
+            }
+        } else {
+            const settingRow = await query("SELECT value FROM settings WHERE key = 'orgName' LIMIT 1");
+            orgName = settingRow.rows.length > 0 ? settingRow.rows[0].value : 'ระบบทะเบียนคุมวัสดุ';
+        }
+        req.session.user = { id: user.id, username: user.username, role: user.role, org_id: orgId, org_name: orgName };
         auditLog({ userId: user.id, username: user.username, action: 'LOGIN_SUCCESS', resource: 'auth', ip: getIp(req) });
-
-        const orgRes = await query("SELECT value FROM settings WHERE key = 'orgName'");
-        const orgName = orgRes.rows.length > 0 ? orgRes.rows[0].value : '';
-        res.json({ success: true, user: { username: user.username, role: user.role }, orgName });
+        res.json({ success: true, user: { username: user.username, role: user.role, org_id: orgId, org_name: orgName }, orgName });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -296,7 +316,13 @@ app.post('/api/change-password', async (req, res) => {
 // ============================
 app.get('/api/users', checkAdmin, async (req, res) => {
     try {
-        const result = await query('SELECT id, username, role, created_at FROM users ORDER BY id');
+        const result = await query(`
+            SELECT u.id, u.username, u.role, u.org_id, u.created_at,
+                   o.name as org_name, o.code as org_code
+            FROM users u
+            LEFT JOIN organizations o ON o.id = u.org_id
+            ORDER BY u.id
+        `);
         res.json({ success: true, data: result.rows });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -308,10 +334,11 @@ app.post('/api/users', checkAdmin, async (req, res) => {
     if (!v.ok) return badRequest(res, v.errors);
     try {
         const { username, password, role } = v.cleaned;
+        const orgId = req.body.org_id ? parseInt(req.body.org_id) : null;
         const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
         const result = await query(
-            'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
-            [username, hash, role]
+            'INSERT INTO users (username, password_hash, role, org_id) VALUES ($1, $2, $3, $4) RETURNING id',
+            [username, hash, role, role === 'admin' ? null : orgId]
         );
         auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'USER_CREATE', resource: 'users', resourceId: result.rows[0].id, details: { newUsername: username, role }, ip: getIp(req) });
         res.json({ success: true, id: result.rows[0].id });
@@ -369,9 +396,17 @@ app.put('/api/users/:id/password', checkAdmin, async (req, res) => {
 // ============================
 app.get('/api/settings', async (req, res) => {
     try {
-        const result = await query("SELECT key, value FROM settings");
+        const orgId = getUserOrgId(req);
         const settings = {};
-        result.rows.forEach(r => settings[r.key] = r.value);
+        if (orgId !== null) {
+            // org-specific orgName from organizations table
+            const orgRow = await query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+            settings['orgName'] = orgRow.rows.length > 0 ? orgRow.rows[0].name : '';
+        } else {
+            // admin: global settings
+            const result = await query("SELECT key, value FROM settings WHERE org_id IS NULL OR org_id = 0");
+            result.rows.forEach(r => settings[r.key] = r.value);
+        }
         res.json({ success: true, data: settings });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -382,10 +417,16 @@ app.put('/api/settings/:key', async (req, res) => {
     const v = validateSetting(req.params.key, req.body);
     if (!v.ok) return badRequest(res, v.errors);
     try {
-        await query(
-            `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [req.params.key, v.cleaned.value]
-        );
+        const orgId = getUserOrgId(req);
+        if (req.params.key === 'orgName' && orgId !== null) {
+            // Update org name in organizations table
+            await query('UPDATE organizations SET name = $1 WHERE id = $2', [v.cleaned.value, orgId]);
+        } else {
+            await query(
+                `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+                [req.params.key, v.cleaned.value]
+            );
+        }
         auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'SETTINGS_UPDATE', resource: 'settings', resourceId: req.params.key, details: { key: req.params.key, value: v.cleaned.value }, ip: getIp(req) });
         res.json({ success: true });
     } catch (err) {
@@ -425,6 +466,12 @@ app.get('/api/items', async (req, res) => {
             params.push(cat);
             paramIdx++;
         }
+        const orgId = getUserOrgId(req);
+        if (orgId !== null) {
+            sql += ` AND org_id = $${paramIdx}`;
+            params.push(orgId);
+            paramIdx++;
+        }
         sql += ' ORDER BY code';
         if (limit) {
             sql += ` LIMIT $${paramIdx}`;
@@ -438,7 +485,13 @@ app.get('/api/items', async (req, res) => {
         }
 
         const result = await query(sql, params);
-        const totalRes = await query('SELECT COUNT(*) as cnt FROM items');
+        let countSql = 'SELECT COUNT(*) as cnt FROM items WHERE 1=1';
+        const countParams = [];
+        let countIdx = 1;
+        if (search) { countSql += ` AND (code ILIKE $${countIdx} OR name ILIKE $${countIdx + 1})`; countParams.push(`%${search}%`, `%${search}%`); countIdx += 2; }
+        if (cat) { countSql += ` AND cat_code = $${countIdx}`; countParams.push(cat); countIdx++; }
+        if (orgId !== null) { countSql += ` AND org_id = $${countIdx}`; countParams.push(orgId); countIdx++; }
+        const totalRes = await query(countSql, countParams);
         res.json({ success: true, data: result.rows, total: parseInt(totalRes.rows[0].cnt) });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -460,10 +513,11 @@ app.post('/api/items', async (req, res) => {
     if (!v.ok) return badRequest(res, v.errors);
     try {
         const { code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price } = v.cleaned;
+        const orgId = req.session.user.org_id || null;
         const result = await query(
-            `INSERT INTO items (code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-            [code, name, spec || '-', cat_code, cat_name, unit, min_qty, location, last_price]
+            `INSERT INTO items (code, name, spec, cat_code, cat_name, unit, min_qty, location, last_price, org_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+            [code, name, spec || '-', cat_code, cat_name, unit, min_qty, location, last_price, orgId]
         );
         auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ITEM_CREATE', resource: 'items', resourceId: result.rows[0].id, details: { code, name }, ip: getIp(req) });
         res.json({ success: true, id: result.rows[0].id });
@@ -514,6 +568,7 @@ app.delete('/api/items/:id', async (req, res) => {
 app.get('/api/balance/:itemId', async (req, res) => {
     try {
         const { dateLimit } = req.query;
+        const orgId = getUserOrgId(req);
         let sql = `
             SELECT COALESCE(SUM(CASE WHEN t.type='IN' THEN tl.qty ELSE 0 END), 0) -
                    COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as balance
@@ -522,7 +577,9 @@ app.get('/api/balance/:itemId', async (req, res) => {
             WHERE tl.item_id = $1
         `;
         const params = [req.params.itemId];
-        if (dateLimit) { sql += ' AND t.date <= $2'; params.push(dateLimit); }
+        let paramIdx = 2;
+        if (dateLimit) { sql += ` AND t.date <= $${paramIdx}`; params.push(dateLimit); paramIdx++; }
+        if (orgId !== null) { sql += ` AND t.org_id = $${paramIdx}`; params.push(orgId); paramIdx++; }
         const result = await query(sql, params);
         res.json({ success: true, balance: parseFloat(result.rows[0].balance) });
     } catch (err) {
@@ -533,15 +590,19 @@ app.get('/api/balance/:itemId', async (req, res) => {
 app.get('/api/balance-all', async (req, res) => {
     try {
         const { dateLimit } = req.query;
+        const orgId = getUserOrgId(req);
         let sql = `
             SELECT tl.item_id,
                    COALESCE(SUM(CASE WHEN t.type='IN' THEN tl.qty ELSE 0 END), 0) -
                    COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as balance
             FROM transaction_lines tl
             JOIN transactions t ON t.id = tl.tx_id
+            WHERE 1=1
         `;
         const params = [];
-        if (dateLimit) { sql += ' WHERE t.date <= $1'; params.push(dateLimit); }
+        let paramIdx = 1;
+        if (dateLimit) { sql += ` AND t.date <= $${paramIdx}`; params.push(dateLimit); paramIdx++; }
+        if (orgId !== null) { sql += ` AND t.org_id = $${paramIdx}`; params.push(orgId); paramIdx++; }
         sql += ' GROUP BY tl.item_id';
         const result = await query(sql, params);
         const balMap = {};
@@ -562,6 +623,8 @@ app.get('/api/transactions', async (req, res) => {
         const params = [];
         let paramIdx = 1;
         if (type) { sql += ` AND type = $${paramIdx}`; params.push(type); paramIdx++; }
+        const orgId = getUserOrgId(req);
+        if (orgId !== null) { sql += ` AND org_id = $${paramIdx}`; params.push(orgId); paramIdx++; }
         sql += ' ORDER BY id DESC';
         if (limit) { sql += ` LIMIT $${paramIdx}`; params.push(parseInt(limit)); paramIdx++; }
 
@@ -595,11 +658,12 @@ app.post('/api/transactions', async (req, res) => {
     const client = await pool.connect();
     try {
         const { date, type, doc_no, ref, note, user_name, approver, checker, lines } = v.cleaned;
+        const orgId = req.session.user.org_id || null;
         await client.query('BEGIN');
         const txResult = await client.query(
-            `INSERT INTO transactions (date, type, doc_no, ref, note, user_name, approver, checker)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-            [date, type, doc_no, ref, note, user_name, approver, checker]
+            `INSERT INTO transactions (date, type, doc_no, ref, note, user_name, approver, checker, org_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+            [date, type, doc_no, ref, note, user_name, approver, checker, orgId]
         );
         const txId = txResult.rows[0].id;
         for (const line of lines) {
@@ -645,7 +709,11 @@ app.delete('/api/transactions/:id', async (req, res) => {
 // ============================
 app.get('/api/dashboard', async (req, res) => {
     try {
-        const totalRes = await query('SELECT COUNT(*) as cnt FROM items');
+        const orgId = getUserOrgId(req);
+        const orgItemCond = orgId !== null ? ' WHERE i.org_id = $1' : '';
+        const orgItemParams = orgId !== null ? [orgId] : [];
+
+        const totalRes = await query(`SELECT COUNT(*) as cnt FROM items${orgItemCond}`, orgItemParams);
         const totalItems = parseInt(totalRes.rows[0].cnt);
 
         const balResult = await query(`
@@ -655,8 +723,9 @@ app.get('/api/dashboard', async (req, res) => {
             FROM items i
             LEFT JOIN transaction_lines tl ON tl.item_id = i.id
             LEFT JOIN transactions t ON t.id = tl.tx_id
+            ${orgId !== null ? 'WHERE i.org_id = $1' : ''}
             GROUP BY i.id, i.name, i.cat_name, i.last_price, i.min_qty
-        `);
+        `, orgItemParams);
 
         let totalValue = 0, lowStock = [], catValue = {};
         balResult.rows.forEach(row => {
@@ -670,7 +739,16 @@ app.get('/api/dashboard', async (req, res) => {
         const now = new Date();
         const month = now.getMonth() + 1;
         const fyStart = month >= 10 ? `${now.getFullYear()}-10-01` : `${now.getFullYear() - 1}-10-01`;
-        const docsRes = await query('SELECT COUNT(*) as cnt FROM transactions WHERE date >= $1', [fyStart]);
+
+        let docsQuery, docsParams;
+        if (orgId !== null) {
+            docsQuery = 'SELECT COUNT(*) as cnt FROM transactions WHERE date >= $1 AND org_id = $2';
+            docsParams = [fyStart, orgId];
+        } else {
+            docsQuery = 'SELECT COUNT(*) as cnt FROM transactions WHERE date >= $1';
+            docsParams = [fyStart];
+        }
+        const docsRes = await query(docsQuery, docsParams);
         const docsThisYear = parseInt(docsRes.rows[0].cnt);
 
         res.json({ success: true, data: { totalItems, totalValue, lowStock, docsThisYear, catValue } });
@@ -685,10 +763,12 @@ app.get('/api/dashboard', async (req, res) => {
 app.get('/api/report', async (req, res) => {
     try {
         const { dateLimit, cat } = req.query;
+        const orgId = getUserOrgId(req);
         let itemSql = 'SELECT * FROM items WHERE 1=1';
         const itemParams = [];
         let paramIdx = 1;
         if (cat) { itemSql += ` AND cat_code = $${paramIdx}`; itemParams.push(cat); paramIdx++; }
+        if (orgId !== null) { itemSql += ` AND org_id = $${paramIdx}`; itemParams.push(orgId); paramIdx++; }
         itemSql += ' ORDER BY cat_code, code';
 
         const itemsRes = await query(itemSql, itemParams);
@@ -698,9 +778,12 @@ app.get('/api/report', async (req, res) => {
                    COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as balance
             FROM transaction_lines tl
             JOIN transactions t ON t.id = tl.tx_id
+            WHERE 1=1
         `;
         const balParams = [];
-        if (dateLimit) { balSql += ' WHERE t.date <= $1'; balParams.push(dateLimit); }
+        let balIdx = 1;
+        if (dateLimit) { balSql += ` AND t.date <= $${balIdx}`; balParams.push(dateLimit); balIdx++; }
+        if (orgId !== null) { balSql += ` AND t.org_id = $${balIdx}`; balParams.push(orgId); balIdx++; }
         balSql += ' GROUP BY tl.item_id';
 
         const balRes = await query(balSql, balParams);
@@ -728,13 +811,16 @@ app.get('/api/stockcard/:itemId', async (req, res) => {
         if (itemRes.rows.length === 0) return res.status(404).json({ success: false, error: 'ไม่พบวัสดุ' });
         const item = itemRes.rows[0];
 
+        const orgId = getUserOrgId(req);
+        const orgCond = orgId !== null ? ' AND t.org_id = $2' : '';
+        const orgParams = orgId !== null ? [req.params.itemId, orgId] : [req.params.itemId];
         const txRes = await query(`
             SELECT t.date, t.type, t.doc_no, t.ref, t.note, tl.qty, tl.price
             FROM transaction_lines tl
             JOIN transactions t ON t.id = tl.tx_id
-            WHERE tl.item_id = $1
+            WHERE tl.item_id = $1${orgCond}
             ORDER BY t.date, t.id
-        `, [req.params.itemId]);
+        `, orgParams);
 
         let balance = 0;
         const movements = txRes.rows.map(row => {
@@ -765,10 +851,16 @@ app.get('/api/next-docno', async (req, res) => {
         const fyStart = month >= 10 ? `${year}-10-01` : `${year - 1}-10-01`;
         const fyEnd = month >= 10 ? `${year + 1}-09-30` : `${year}-09-30`;
 
-        const countRes = await query(
-            'SELECT COUNT(*) as cnt FROM transactions WHERE type = $1 AND date >= $2 AND date <= $3',
-            [type, fyStart, fyEnd]
-        );
+        const orgId = getUserOrgId(req);
+        let countQuery, countParams;
+        if (orgId !== null) {
+            countQuery = 'SELECT COUNT(*) as cnt FROM transactions WHERE type = $1 AND date >= $2 AND date <= $3 AND org_id = $4';
+            countParams = [type, fyStart, fyEnd, orgId];
+        } else {
+            countQuery = 'SELECT COUNT(*) as cnt FROM transactions WHERE type = $1 AND date >= $2 AND date <= $3';
+            countParams = [type, fyStart, fyEnd];
+        }
+        const countRes = await query(countQuery, countParams);
         const count = parseInt(countRes.rows[0].cnt) + 1;
         const run = String(count).padStart(4, '0');
         res.json({ success: true, docNo: `${type}-${run}/${fyShort}` });
@@ -780,12 +872,15 @@ app.get('/api/next-docno', async (req, res) => {
 // ============================
 // Helper: รวบรวมข้อมูลทั้งหมดสำหรับ backup
 // ============================
-async function collectBackupData() {
+async function collectBackupData(orgId = null) {
+    const orgParam = orgId !== null ? [orgId] : [];
     const [settings, items, transactions, txLines] = await Promise.all([
         query('SELECT * FROM settings'),
-        query('SELECT * FROM items'),
-        query('SELECT * FROM transactions'),
-        query('SELECT * FROM transaction_lines'),
+        orgId !== null ? query('SELECT * FROM items WHERE org_id = $1', orgParam) : query('SELECT * FROM items'),
+        orgId !== null ? query('SELECT * FROM transactions WHERE org_id = $1', orgParam) : query('SELECT * FROM transactions'),
+        orgId !== null
+            ? query('SELECT tl.* FROM transaction_lines tl JOIN transactions t ON t.id = tl.tx_id WHERE t.org_id = $1', orgParam)
+            : query('SELECT * FROM transaction_lines'),
     ]);
     return {
         settings: settings.rows,
@@ -794,15 +889,17 @@ async function collectBackupData() {
         transaction_lines: txLines.rows,
         exportDate: new Date().toISOString(),
         version: 'PG_V1',
+        org_id: orgId,
     };
 }
 
 // ============================
 // API: Backup / Restore / Reset (Admin only)
 // ============================
-app.get('/api/backup', checkAdmin, async (req, res) => {
+app.get('/api/backup', async (req, res) => {
     try {
-        const payload = await collectBackupData();
+        const orgId = getUserOrgId(req); // null = all orgs (admin), or specific org for user
+        const payload = await collectBackupData(orgId);
         auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_BACKUP', resource: 'backup', details: { itemCount: payload.items.length, txCount: payload.transactions.length }, ip: getIp(req) });
         res.json({ success: true, data: payload });
     } catch (err) {
@@ -959,7 +1056,7 @@ app.post('/api/auto-backups/:id/restore', checkAdmin, async (req, res) => {
 // ============================
 // API: Audit Logs (Admin only)
 // ============================
-app.get('/api/audit-logs', checkAdmin, async (req, res) => {
+app.get('/api/audit-logs', checkAuth, async (req, res) => {
     try {
         const page   = Math.max(1, parseInt(req.query.page  || '1'));
         const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit || '50')));
@@ -974,6 +1071,8 @@ app.get('/api/audit-logs', checkAdmin, async (req, res) => {
         if (action) { where += ` AND action = $${idx++}`; params.push(action); }
         if (dateFrom) { where += ` AND timestamp >= $${idx++}`; params.push(dateFrom); }
         if (dateTo)   { where += ` AND timestamp <= $${idx++}`; params.push(dateTo + 'T23:59:59'); }
+        const orgId = getUserOrgId(req);
+        if (orgId !== null) { where += ` AND user_id = $${idx++}`; params.push(req.session.user.id); }
 
         const countRes = await query(`SELECT COUNT(*) as cnt FROM audit_logs ${where}`, params);
         const total = parseInt(countRes.rows[0].cnt);
@@ -993,9 +1092,16 @@ app.post('/api/reset', checkAdmin, async (req, res) => {
     if (req.body.confirm_text !== 'ยืนยันการลบ')
         return res.status(400).json({ success: false, error: 'กรุณาพิมพ์ "ยืนยันการลบ" เพื่อยืนยันการดำเนินการ' });
     try {
-        await query('DELETE FROM transaction_lines');
-        await query('DELETE FROM transactions');
-        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESET', resource: 'transactions', ip: getIp(req) });
+        const targetOrgId = req.body.org_id ? parseInt(req.body.org_id) : null;
+        if (targetOrgId !== null) {
+            // Delete only for specific org
+            await query(`DELETE FROM transaction_lines WHERE tx_id IN (SELECT id FROM transactions WHERE org_id = $1)`, [targetOrgId]);
+            await query('DELETE FROM transactions WHERE org_id = $1', [targetOrgId]);
+        } else {
+            await query('DELETE FROM transaction_lines');
+            await query('DELETE FROM transactions');
+        }
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'DATA_RESET', resource: 'transactions', details: { org_id: targetOrgId }, ip: getIp(req) });
         res.json({ success: true, message: 'ล้างเอกสารทั้งหมดสำเร็จ' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -1053,6 +1159,65 @@ app.put('/api/rate-limits/:key', checkAdmin, async (req, res) => {
 });
 
 // ============================
+// API: Organizations (Admin only)
+// ============================
+app.get('/api/organizations', checkAdmin, async (req, res) => {
+    try {
+        const result = await query('SELECT * FROM organizations ORDER BY id');
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/organizations', checkAdmin, async (req, res) => {
+    const { code, name } = req.body;
+    if (!code || !name) return res.status(400).json({ success: false, error: 'กรุณากรอก code และชื่อหน่วยงาน' });
+    try {
+        const result = await query(
+            'INSERT INTO organizations (code, name) VALUES ($1, $2) RETURNING id',
+            [sanitize(code), sanitize(name)]
+        );
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ORG_CREATE', resource: 'organizations', resourceId: result.rows[0].id, details: { code, name }, ip: getIp(req) });
+        res.json({ success: true, id: result.rows[0].id });
+    } catch (err) {
+        if (err.code === '23505') return res.status(400).json({ success: false, error: 'รหัสหน่วยงานนี้มีอยู่แล้ว' });
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.put('/api/organizations/:id', checkAdmin, async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
+    const { code, name } = req.body;
+    if (!code || !name) return res.status(400).json({ success: false, error: 'กรุณากรอก code และชื่อหน่วยงาน' });
+    try {
+        await query('UPDATE organizations SET code = $1, name = $2 WHERE id = $3', [sanitize(code), sanitize(name), req.params.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ORG_UPDATE', resource: 'organizations', resourceId: req.params.id, details: { code, name }, ip: getIp(req) });
+        res.json({ success: true });
+    } catch (err) {
+        if (err.code === '23505') return res.status(400).json({ success: false, error: 'รหัสหน่วยงานนี้มีอยู่แล้ว' });
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.delete('/api/organizations/:id', checkAdmin, async (req, res) => {
+    const vId = validateId(req.params.id);
+    if (!vId.ok) return badRequest(res, vId.errors);
+    try {
+        const hasItems = await query('SELECT COUNT(*) as cnt FROM items WHERE org_id = $1', [req.params.id]);
+        const hasTx = await query('SELECT COUNT(*) as cnt FROM transactions WHERE org_id = $1', [req.params.id]);
+        if (parseInt(hasItems.rows[0].cnt) > 0 || parseInt(hasTx.rows[0].cnt) > 0)
+            return res.status(400).json({ success: false, error: 'ไม่สามารถลบได้ มีข้อมูลอ้างอิงอยู่' });
+        await query('DELETE FROM organizations WHERE id = $1', [req.params.id]);
+        auditLog({ userId: req.session.user.id, username: req.session.user.username, action: 'ORG_DELETE', resource: 'organizations', resourceId: req.params.id, ip: getIp(req) });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================
 // API: Keep-Alive (ต่ออายุ session)
 // ============================
 app.post('/api/keep-alive', (req, res) => {
@@ -1094,16 +1259,11 @@ async function autoInit() {
         const userCheck = await pool.query('SELECT COUNT(*) as cnt FROM users');
         if (parseInt(userCheck.rows[0].cnt) === 0) {
             const adminHash = await bcrypt.hash('admin123', BCRYPT_ROUNDS);
-            const userHash = await bcrypt.hash('user123', BCRYPT_ROUNDS);
             await pool.query(
                 'INSERT INTO users (username, password_hash, role) VALUES ($1,$2,$3)',
                 ['admin', adminHash, 'admin']
             );
-            await pool.query(
-                'INSERT INTO users (username, password_hash, role) VALUES ($1,$2,$3)',
-                ['user', userHash, 'user']
-            );
-            console.log('🔑 สร้างผู้ใช้เริ่มต้น: admin/admin123, user/user123');
+            console.log('🔑 สร้างผู้ใช้เริ่มต้น: admin/admin123');
         }
 
         // ตรวจและสร้างตาราง audit_logs ถ้ายังไม่มี (upgrade เซิร์ฟเวอร์เก่า)
@@ -1129,6 +1289,68 @@ async function autoInit() {
             "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
             ['orgName', 'องค์การบริหารส่วนตำบลตัวอย่าง']
         );
+
+        // สร้างตาราง organizations
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS organizations (
+                id SERIAL PRIMARY KEY,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        // Seed 3 organizations
+        const orgSeeds = [
+            ['SK0001', 'ศูนย์พัฒนาเด็กเล็กองค์การบริหารส่วนตำบลเขิน 1'],
+            ['SK0002', 'ศูนย์พัฒนาเด็กเล็กองค์การบริหารส่วนตำบลเขิน 2'],
+            ['SK0003', 'ศูนย์พัฒนาเด็กเล็กวัดบ้านโนนหนองสิม'],
+        ];
+        for (const [code, name] of orgSeeds) {
+            await pool.query('INSERT INTO organizations (code, name) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING', [code, name]);
+        }
+        console.log('✅ ตาราง organizations พร้อม (3 หน่วยงาน)');
+
+        // เพิ่มคอลัมน์ org_id ให้ตาราง users ถ้ายังไม่มี
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES organizations(id)');
+
+        // Seed org users (ลบ user เดิมที่ไม่ใช่ admin แล้วสร้างใหม่ตาม org)
+        const orgUserCheck = await pool.query("SELECT COUNT(*) as cnt FROM users WHERE username IN ('sk0001','sk0002','sk0003')");
+        if (parseInt(orgUserCheck.rows[0].cnt) === 0) {
+            // ลบ user เดิม (ถ้ามี)
+            await pool.query("DELETE FROM users WHERE username = 'user' AND role = 'user'");
+            const sk1hash = await bcrypt.hash('sk0001pass', BCRYPT_ROUNDS);
+            const sk2hash = await bcrypt.hash('sk0002pass', BCRYPT_ROUNDS);
+            const sk3hash = await bcrypt.hash('sk0003pass', BCRYPT_ROUNDS);
+            const org1 = await pool.query("SELECT id FROM organizations WHERE code = 'SK0001'");
+            const org2 = await pool.query("SELECT id FROM organizations WHERE code = 'SK0002'");
+            const org3 = await pool.query("SELECT id FROM organizations WHERE code = 'SK0003'");
+            if (org1.rows.length > 0)
+                await pool.query('INSERT INTO users (username, password_hash, role, org_id) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING', ['sk0001', sk1hash, 'user', org1.rows[0].id]);
+            if (org2.rows.length > 0)
+                await pool.query('INSERT INTO users (username, password_hash, role, org_id) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING', ['sk0002', sk2hash, 'user', org2.rows[0].id]);
+            if (org3.rows.length > 0)
+                await pool.query('INSERT INTO users (username, password_hash, role, org_id) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING', ['sk0003', sk3hash, 'user', org3.rows[0].id]);
+            console.log('🔑 สร้างผู้ใช้ตามหน่วยงาน: sk0001/sk0001pass, sk0002/sk0002pass, sk0003/sk0003pass');
+        }
+
+        // เพิ่ม org_id ให้ตาราง items ถ้ายังไม่มี
+        await pool.query('ALTER TABLE items ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES organizations(id)');
+        const org1Row = await pool.query("SELECT id FROM organizations WHERE code = 'SK0001'");
+        if (org1Row.rows.length > 0) {
+            await pool.query('UPDATE items SET org_id = $1 WHERE org_id IS NULL', [org1Row.rows[0].id]);
+        }
+
+        // เพิ่ม org_id ให้ตาราง transactions ถ้ายังไม่มี
+        await pool.query('ALTER TABLE transactions ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES organizations(id)');
+        if (org1Row.rows.length > 0) {
+            await pool.query('UPDATE transactions SET org_id = $1 WHERE org_id IS NULL', [org1Row.rows[0].id]);
+        }
+
+        // เพิ่ม org_id ให้ตาราง settings ถ้ายังไม่มี (สำหรับ admin global settings)
+        await pool.query('ALTER TABLE settings ADD COLUMN IF NOT EXISTS org_id INTEGER');
+
+        console.log('✅ Migration: org_id columns พร้อม');
 
         // ตารางตั้งค่า Rate Limit
         await pool.query(`
@@ -1433,7 +1655,7 @@ autoInit().then(() => {
     app.listen(PORT, '0.0.0.0', () => {
         console.log('');
         console.log('╔══════════════════════════════════════════════════╗');
-        console.log('║  🏛️  ระบบบัญชีคุมวัสดุ อปท. (PostgreSQL Edition) ║');
+        console.log('║  🏛️  ระบบทะเบียนคุมวัสดุ (PostgreSQL Edition)    ║');
         console.log('╠══════════════════════════════════════════════════╣');
         console.log(`║  🌐 http://localhost:${PORT}                         ║`);
         console.log('║  📦 ฐานข้อมูล: PostgreSQL                        ║');

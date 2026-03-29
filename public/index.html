@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบบัญชีคุมวัสดุ อปท. (ว.1095)</title>
+    <title>ระบบทะเบียนคุมวัสดุ</title>
     <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -282,7 +282,7 @@
             <div class="brand-icon"><i class="fas fa-landmark"></i></div>
             <div class="brand-text">
                 <span class="title">e-Stock อปท.</span>
-                <span class="sub">ระบบบัญชีคุมวัสดุ ว.1095</span>
+                <span class="sub">ระบบทะเบียนคุมวัสดุ</span>
             </div>
             <span id="dbBadge" class="db-badge sql">SQL</span>
         </div>
@@ -305,6 +305,9 @@
             <div class="menu-section">จัดการข้อมูล</div>
             <a href="#" class="menu-item admin-only" id="menuUsers" onclick="nav('users', this)" style="display:none;">
                 <i class="fas fa-users"></i> จัดการผู้ใช้
+            </a>
+            <a href="#" class="menu-item admin-only" id="menuOrgs" onclick="nav('orgs', this)" style="display:none;">
+                <i class="fas fa-building"></i> จัดการหน่วยงาน
             </a>
             <a href="#" class="menu-item admin-only" id="menuAuditLog" onclick="nav('auditlog', this)" style="display:none;">
                 <i class="fas fa-history"></i> บันทึกการใช้งาน
@@ -346,6 +349,14 @@
                 <div id="sessionCountdownWrap" style="display:flex; align-items:center; gap:6px; margin-right:12px; font-size:0.82rem; color:var(--text-muted);">
                     <i class="fas fa-clock" style="font-size:0.8rem;"></i>
                     <span id="sessionCountdown" style="font-variant-numeric:tabular-nums; min-width:38px;">--:--</span>
+                </div>
+                <div id="orgDisplayWrap" style="display:none; align-items:center; gap:6px; margin-right:8px; font-size:0.82rem; color:var(--text-muted);">
+                    <i class="fas fa-building" style="font-size:0.8rem;"></i>
+                    <span id="orgDisplayText" style="font-weight:500; color:var(--primary);"></span>
+                    <!-- Admin dropdown to filter by org -->
+                    <select id="adminOrgFilter" style="display:none; font-size:0.8rem; padding:2px 6px; border:1px solid var(--border); border-radius:4px; margin-left:4px;" onchange="onAdminOrgFilterChange()">
+                        <option value="">ทั้งหมด</option>
+                    </select>
                 </div>
                 <div style="text-align:right; line-height:1.3;">
                     <span id="headerUsername" style="font-weight:600;"></span>
@@ -642,6 +653,7 @@
                                 <th>#</th>
                                 <th>ชื่อผู้ใช้</th>
                                 <th>สิทธิ์</th>
+                                <th>หน่วยงาน</th>
                                 <th>วันที่สร้าง</th>
                                 <th class="text-center">จัดการ</th>
                             </tr>
@@ -687,6 +699,30 @@
                         </span>
                     </div>
                     <div id="rateLimitList"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== ORGANIZATIONS MANAGEMENT ===== -->
+        <section id="orgs" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-building"></i> จัดการหน่วยงาน</h3>
+                    <button class="btn btn-primary" onclick="openAddOrgModal()"><i class="fas fa-plus"></i> เพิ่มหน่วยงาน</button>
+                </div>
+                <div class="card-body table-responsive">
+                    <table class="table table-striped table-hover" id="orgsTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>รหัส</th>
+                                <th>ชื่อหน่วยงาน</th>
+                                <th>วันที่สร้าง</th>
+                                <th class="text-center">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
             </div>
         </section>
@@ -738,9 +774,15 @@
                 </div>
                 <div class="form-group">
                     <label>สิทธิ์</label>
-                    <select id="newUserRole">
+                    <select id="newUserRole" onchange="toggleNewUserOrgGroup()">
                         <option value="user">user — เจ้าหน้าที่ทั่วไป</option>
                         <option value="admin">admin — ผู้ดูแลระบบ</option>
+                    </select>
+                </div>
+                <div class="form-group" id="newUserOrgGroup" style="margin-top:14px;">
+                    <label>หน่วยงาน</label>
+                    <select id="newUserOrg">
+                        <option value="">-- เลือกหน่วยงาน --</option>
                     </select>
                 </div>
             </div>
@@ -872,7 +914,7 @@
                 </div>
                 <div class="form-group"><label>คุณลักษณะ/สเปค</label><input type="text" id="mSpec"></div>
                 <div class="form-row">
-                    <div class="form-group flex-2"><label>ประเภท (ว.1095)</label><select id="mCat"></select></div>
+                    <div class="form-group flex-2"><label>ประเภท</label><select id="mCat"></select></div>
                     <div class="form-group"><label>หน่วยนับ</label><input type="text" id="mUnit" required></div>
                 </div>
                 <div class="form-row">
@@ -901,6 +943,31 @@
         </div>
     </div>
 
+    <!-- ===== ADD/EDIT ORG MODAL ===== -->
+    <div id="orgModal" class="modal">
+        <div class="modal-content" style="width:460px;">
+            <div class="modal-header">
+                <h3 id="orgModalTitle"><i class="fas fa-building" style="color:var(--accent);"></i> เพิ่มหน่วยงาน</h3>
+                <span class="close" onclick="closeModal('orgModal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="orgId">
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label>รหัสหน่วยงาน</label>
+                    <input type="text" id="orgCode" placeholder="เช่น SK0001">
+                </div>
+                <div class="form-group">
+                    <label>ชื่อหน่วยงาน</label>
+                    <input type="text" id="editOrgName" placeholder="ชื่อเต็มของหน่วยงาน">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('orgModal')">ยกเลิก</button>
+                <button class="btn btn-success" onclick="saveOrg()"><i class="fas fa-save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // ============================================================
         // CONFIG & CONSTANTS (คงเดิม + เพิ่ม API_BASE)
@@ -911,7 +978,8 @@
         // ============================================================
         // AUTH
         // ============================================================
-        let currentUser = null; // { id, username, role }
+        let currentUser = null; // { id, username, role, org_id, org_name }
+        let currentAdminOrgFilter = null; // for admin: filter by org_id (null = all)
 
         async function doLogout() {
             if (!confirm('ต้องการออกจากระบบ?')) return;
@@ -992,6 +1060,15 @@
         function showLoading() { document.getElementById('loadingOverlay').classList.add('active'); }
         function hideLoading() { document.getElementById('loadingOverlay').classList.remove('active'); }
 
+        // เพิ่ม filter_org_id param สำหรับ admin ที่เลือกกรองหน่วยงาน
+        function adminOrgParam(existingQs = '') {
+            if (currentUser && currentUser.role === 'admin' && currentAdminOrgFilter !== null) {
+                const sep = existingQs.includes('?') ? '&' : '?';
+                return `${existingQs}${sep}filter_org_id=${currentAdminOrgFilter}`;
+            }
+            return existingQs;
+        }
+
         // ============================================================
         // INIT (แก้ไขจาก sync เป็น async)
         // ============================================================
@@ -1036,6 +1113,19 @@
                 if (currentUser.role === 'admin') {
                     document.querySelectorAll('.admin-only').forEach(el => el.style.display = '');
                 }
+                // แสดงหน่วยงาน
+                if (currentUser.role === 'admin') {
+                    // Admin: แสดง dropdown เลือกหน่วยงาน
+                    document.getElementById('orgDisplayWrap').style.display = 'flex';
+                    document.getElementById('adminOrgFilter').style.display = 'inline-block';
+                    document.getElementById('orgDisplayText').textContent = 'หน่วยงาน:';
+                    // Load org list for dropdown
+                    loadAdminOrgDropdown();
+                } else if (currentUser.org_name) {
+                    // User: แสดงชื่อหน่วยงาน
+                    document.getElementById('orgDisplayWrap').style.display = 'flex';
+                    document.getElementById('orgDisplayText').textContent = currentUser.org_name;
+                }
             }
             startSessionTimer();
             await initUI();
@@ -1077,9 +1167,9 @@
         async function refreshItemsCache() {
             if (USE_SQL) {
                 try {
-                    const res = await api('/items');
+                    const res = await api(adminOrgParam('/items'));
                     cachedItems = res.data;
-                    const balRes = await api('/balance-all');
+                    const balRes = await api(adminOrgParam('/balance-all'));
                     cachedBalances = balRes.data;
                 } catch (e) {
                     console.error('Cache refresh failed:', e);
@@ -1134,6 +1224,7 @@
             if (pageId === 'auditlog') renderAuditLog(1);
             if (pageId === 'ratelimit') renderRateLimit();
             if (pageId === 'autobackup') renderAutoBackups();
+            if (pageId === 'orgs') renderOrgs();
         }
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
@@ -1148,7 +1239,7 @@
 
             if (USE_SQL) {
                 try {
-                    const res = await api('/dashboard');
+                    const res = await api(adminOrgParam('/dashboard'));
                     const d = res.data;
 
                     document.getElementById('d-totalItems').innerText = d.totalItems;
@@ -1196,8 +1287,8 @@
                     if (keyword) params.set('search', keyword);
                     if (!keyword) params.set('limit', '50');
                     
-                    const res = await api(`/items?${params}`);
-                    const balRes = await api('/balance-all');
+                    const res = await api(adminOrgParam(`/items?${params}`));
+                    const balRes = await api(adminOrgParam('/balance-all'));
                     cachedBalances = balRes.data;
 
                     tbody.innerHTML = '';
@@ -1446,7 +1537,7 @@
 
             if (USE_SQL) {
                 try {
-                    const res = await api('/transactions?limit=10');
+                    const res = await api(adminOrgParam('/transactions?limit=10'));
                     tb.innerHTML = '';
                     res.data.forEach(t => {
                         tb.innerHTML += `
@@ -1753,7 +1844,7 @@
         // ============================================================
         async function renderUsers() {
             const tbody = document.querySelector('#usersTable tbody');
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลด...</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center">กำลังโหลด...</td></tr>';
             try {
                 const res = await api('/users');
                 tbody.innerHTML = '';
@@ -1768,6 +1859,7 @@
                             <td>${u.id}</td>
                             <td><strong>${u.username}</strong> ${isMe ? '<span style="font-size:0.75rem;color:var(--text-muted)">(คุณ)</span>' : ''}</td>
                             <td>${roleBadge}</td>
+                            <td>${u.org_name ? u.org_name : '<span style="color:var(--text-muted)">ทั้งหมด</span>'}</td>
                             <td>${createdDate}</td>
                             <td class="text-center">
                                 <button class="btn-secondary" onclick="openChangeUserPwModal(${u.id},'${u.username}')" title="เปลี่ยนรหัสผ่าน">
@@ -1780,10 +1872,10 @@
                         </tr>`;
                 });
                 if (res.data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="text-center">ไม่มีผู้ใช้</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center">ไม่มีผู้ใช้</td></tr>';
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="5" style="color:red" class="text-center">${e.message}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" style="color:red" class="text-center">${e.message}</td></tr>`;
             }
         }
 
@@ -1791,6 +1883,8 @@
             document.getElementById('newUsername').value = '';
             document.getElementById('newUserPw').value = '';
             document.getElementById('newUserRole').value = 'user';
+            document.getElementById('newUserOrg').value = '';
+            document.getElementById('newUserOrgGroup').style.display = 'block';
             document.getElementById('addUserModal').style.display = 'flex';
         }
 
@@ -1798,9 +1892,10 @@
             const username = document.getElementById('newUsername').value.trim();
             const password = document.getElementById('newUserPw').value;
             const role = document.getElementById('newUserRole').value;
+            const orgId = document.getElementById('newUserOrg').value;
             if (!username || !password) return alert('กรุณากรอกข้อมูลให้ครบ');
             try {
-                await api('/users', { method: 'POST', body: { username, password, role } });
+                await api('/users', { method: 'POST', body: { username, password, role, org_id: orgId || null } });
                 closeModal('addUserModal');
                 showToast('เพิ่มผู้ใช้สำเร็จ');
                 renderUsers();
@@ -1814,6 +1909,124 @@
                 showToast('ลบผู้ใช้สำเร็จ');
                 renderUsers();
             } catch (e) { alert(e.message); }
+        }
+
+        function toggleNewUserOrgGroup() {
+            const role = document.getElementById('newUserRole').value;
+            document.getElementById('newUserOrgGroup').style.display = role === 'admin' ? 'none' : 'block';
+        }
+
+        // ============================================================
+        // ORGANIZATIONS MANAGEMENT (Admin only)
+        // ============================================================
+        async function renderOrgs() {
+            const tbody = document.querySelector('#orgsTable tbody');
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลด...</td></tr>';
+            try {
+                const res = await api('/organizations');
+                tbody.innerHTML = '';
+                res.data.forEach(o => {
+                    const createdDate = new Date(o.created_at).toLocaleDateString('th-TH', { year:'numeric', month:'short', day:'numeric' });
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${o.id}</td>
+                            <td><strong>${o.code}</strong></td>
+                            <td>${o.name}</td>
+                            <td>${createdDate}</td>
+                            <td class="text-center">
+                                <button class="btn btn-secondary" onclick="openEditOrgModal(${o.id},'${o.code.replace(/'/g,"\\'")}','${o.name.replace(/'/g,"\\'")}')">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn btn-danger" onclick="deleteOrg(${o.id},'${o.name.replace(/'/g,"\\'")}')">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </td>
+                        </tr>`;
+                });
+                if (res.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center">ไม่มีหน่วยงาน</td></tr>';
+                }
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" style="color:red" class="text-center">${e.message}</td></tr>`;
+            }
+        }
+
+        function openAddOrgModal() {
+            document.getElementById('orgId').value = '';
+            document.getElementById('orgCode').value = '';
+            document.getElementById('editOrgName').value = '';
+            document.getElementById('orgModalTitle').innerHTML = '<i class="fas fa-building" style="color:var(--accent);"></i> เพิ่มหน่วยงาน';
+            document.getElementById('orgModal').style.display = 'flex';
+        }
+
+        function openEditOrgModal(id, code, name) {
+            document.getElementById('orgId').value = id;
+            document.getElementById('orgCode').value = code;
+            document.getElementById('editOrgName').value = name;
+            document.getElementById('orgModalTitle').innerHTML = '<i class="fas fa-building" style="color:var(--accent);"></i> แก้ไขหน่วยงาน';
+            document.getElementById('orgModal').style.display = 'flex';
+        }
+
+        async function saveOrg() {
+            const id = document.getElementById('orgId').value;
+            const code = document.getElementById('orgCode').value.trim();
+            const name = document.getElementById('editOrgName').value.trim();
+            if (!code || !name) return alert('กรุณากรอกรหัสและชื่อหน่วยงาน');
+            try {
+                if (id) {
+                    await api(`/organizations/${id}`, { method: 'PUT', body: { code, name } });
+                    showToast('แก้ไขหน่วยงานสำเร็จ');
+                } else {
+                    await api('/organizations', { method: 'POST', body: { code, name } });
+                    showToast('เพิ่มหน่วยงานสำเร็จ');
+                }
+                closeModal('orgModal');
+                renderOrgs();
+            } catch (e) { alert(e.message); }
+        }
+
+        async function deleteOrg(id, name) {
+            if (!confirm(`ยืนยันลบหน่วยงาน "${name}" ?`)) return;
+            try {
+                await api(`/organizations/${id}`, { method: 'DELETE' });
+                showToast('ลบหน่วยงานสำเร็จ');
+                renderOrgs();
+            } catch (e) { alert(e.message); }
+        }
+
+        async function loadAdminOrgDropdown() {
+            try {
+                const res = await api('/organizations');
+                const sel = document.getElementById('adminOrgFilter');
+                // Keep the first "ทั้งหมด" option
+                sel.innerHTML = '<option value="">ทั้งหมด</option>';
+                res.data.forEach(o => {
+                    sel.innerHTML += `<option value="${o.id}">${o.name}</option>`;
+                });
+                // Also populate newUserOrg dropdown
+                const userOrgSel = document.getElementById('newUserOrg');
+                if (userOrgSel) {
+                    userOrgSel.innerHTML = '<option value="">-- เลือกหน่วยงาน --</option>';
+                    res.data.forEach(o => {
+                        userOrgSel.innerHTML += `<option value="${o.id}">${o.code} — ${o.name}</option>`;
+                    });
+                }
+            } catch (e) {
+                console.error('Load org dropdown error:', e);
+            }
+        }
+
+        function onAdminOrgFilterChange() {
+            const sel = document.getElementById('adminOrgFilter');
+            currentAdminOrgFilter = sel.value ? parseInt(sel.value) : null;
+            // Refresh current view
+            const activePage = document.querySelector('.page-section.active');
+            if (activePage) {
+                const pageId = activePage.id;
+                if (pageId === 'dashboard') renderDashboard();
+                if (pageId === 'master') renderMaster();
+                if (pageId === 'transaction') renderTxHistory();
+            }
         }
 
         function openChangeUserPwModal(id, username) {
