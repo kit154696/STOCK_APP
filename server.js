@@ -1341,16 +1341,25 @@ app.get('/api/audit-logs', checkAuth, async (req, res) => {
     }
 });
 
-app.post('/api/reset', checkAdmin, async (req, res) => {
+app.post('/api/reset', checkAuth, async (req, res) => {
     if (req.body.confirm_text !== 'ยืนยันการลบ')
         return res.status(400).json({ success: false, error: 'กรุณาพิมพ์ "ยืนยันการลบ" เพื่อยืนยันการดำเนินการ' });
     try {
-        const targetOrgId = req.body.org_id ? parseInt(req.body.org_id) : null;
+        const isAdmin = req.session.user.role === 'admin';
+        // user ล้างได้เฉพาะ org ตัวเอง, admin เลือกได้ว่าจะล้าง org ใดหรือทั้งหมด
+        let targetOrgId;
+        if (isAdmin) {
+            targetOrgId = req.body.org_id ? parseInt(req.body.org_id) : null;
+        } else {
+            targetOrgId = req.session.user.org_id;
+            if (!targetOrgId) return res.status(403).json({ success: false, error: 'ไม่พบข้อมูลหน่วยงาน' });
+        }
+
         if (targetOrgId !== null) {
-            // Delete only for specific org
             await query(`DELETE FROM transaction_lines WHERE tx_id IN (SELECT id FROM transactions WHERE org_id = $1)`, [targetOrgId]);
             await query('DELETE FROM transactions WHERE org_id = $1', [targetOrgId]);
         } else {
+            // admin ล้างทั้งหมด (ไม่มี org filter)
             await query('DELETE FROM transaction_lines');
             await query('DELETE FROM transactions');
         }
