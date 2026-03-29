@@ -13,6 +13,7 @@ const pgSession = require('connect-pg-simple')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
+const ExcelJS = require('exceljs');
 
 const {
     sanitize,
@@ -108,7 +109,7 @@ app.use(helmet({
                 'https://cdnjs.cloudflare.com',
             ],
             imgSrc: ["'self'", 'data:'],
-            connectSrc: ["'self'"],
+            connectSrc: ["'self'", 'https://cdn.jsdelivr.net'],
             frameSrc: ["'none'"],
             objectSrc: ["'none'"],
         },
@@ -710,7 +711,7 @@ app.delete('/api/transactions/:id', async (req, res) => {
 app.get('/api/dashboard', async (req, res) => {
     try {
         const orgId = getUserOrgId(req);
-        const orgItemCond = orgId !== null ? ' WHERE i.org_id = $1' : '';
+        const orgItemCond = orgId !== null ? ' WHERE org_id = $1' : '';
         const orgItemParams = orgId !== null ? [orgId] : [];
 
         const totalRes = await query(`SELECT COUNT(*) as cnt FROM items${orgItemCond}`, orgItemParams);
@@ -797,6 +798,257 @@ app.get('/api/report', async (req, res) => {
         })).filter(i => i.balance > 0);
 
         res.json({ success: true, data: report });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================
+// API: Report Summary (รับ-จ่ายประจำปีงบประมาณ)
+// ============================
+
+/** helper: คำนวณข้อมูลรายงานรับ-จ่าย */
+async function buildReportSummary(orgId, fiscalYearBE, cat) {
+    // แปลง พ.ศ. → ค.ศ.
+    const fyAD = parseInt(fiscalYearBE) - 543;
+    const fyStart = `${fyAD - 1}-10-01`;  // 1 ต.ค. ปีก่อน
+    const fyEnd   = `${fyAD}-09-30`;       // 30 ก.ย. ปีที่ระบุ
+
+    // ดึงรายการวัสดุ
+    let itemSql = 'SELECT * FROM items WHERE 1=1';
+    const itemParams = [];
+    let pi = 1;
+    if (cat && cat !== 'ALL') { itemSql += ` AND cat_code = $${pi++}`; itemParams.push(cat); }
+    if (orgId !== null) { itemSql += ` AND org_id = $${pi++}`; itemParams.push(orgId); }
+    itemSql += ' ORDER BY cat_code, code';
+    const itemsRes = await query(itemSql, itemParams);
+
+    // org filter condition สำหรับ transactions
+    const orgTxCond = orgId !== null ? ` AND t.org_id = $${pi++}` : '';
+    const orgTxParam = orgId !== null ? [orgId] : [];
+
+    // ยอดยกมา: ก่อน fyStart
+    const bfRes = await query(`
+        SELECT tl.item_id,
+               COALESCE(SUM(CASE WHEN t.type='IN'  THEN tl.qty ELSE 0 END), 0) as in_bf,
+               COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as out_bf
+        FROM transaction_lines tl
+        JOIN transactions t ON t.id = tl.tx_id
+        WHERE t.date < $1${orgTxCond}
+        GROUP BY tl.item_id
+    `, [fyStart, ...orgTxParam]);
+
+    // รับ-จ่ายในปีงบ
+    const inFyRes = await query(`
+        SELECT tl.item_id,
+               COALESCE(SUM(CASE WHEN t.type='IN'  THEN tl.qty ELSE 0 END), 0) as received,
+               COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as issued
+        FROM transaction_lines tl
+        JOIN transactions t ON t.id = tl.tx_id
+        WHERE t.date >= $1 AND t.date <= $2${orgTxCond}
+        GROUP BY tl.item_id
+    `, [fyStart, fyEnd, ...orgTxParam]);
+
+    // สร้าง map
+    const bfMap = {};
+    bfRes.rows.forEach(r => { bfMap[r.item_id] = { in_bf: +r.in_bf, out_bf: +r.out_bf }; });
+    const inFyMap = {};
+    inFyRes.rows.forEach(r => { inFyMap[r.item_id] = { received: +r.received, issued: +r.issued }; });
+
+    // ประกอบรายงาน
+    let no = 0;
+    const rows = [];
+    let totBF = 0, totRec = 0, totIss = 0, totBal = 0;
+
+    for (const item of itemsRes.rows) {
+        const bf  = bfMap[item.id]   || { in_bf: 0, out_bf: 0 };
+        const fy  = inFyMap[item.id] || { received: 0, issued: 0 };
+        const brought_forward = bf.in_bf - bf.out_bf;
+        const received = fy.received;
+        const issued   = fy.issued;
+        const balance  = brought_forward + received - issued;
+
+        // ข้ามรายการที่ไม่มีความเคลื่อนไหวเลย
+        if (brought_forward === 0 && received === 0 && issued === 0) continue;
+
+        no++;
+        rows.push({ no, cat_name: item.cat_name, name: item.name, unit: item.unit,
+                    brought_forward, received, issued, balance });
+        totBF  += brought_forward;
+        totRec += received;
+        totIss += issued;
+        totBal += balance;
+    }
+
+    return { fyStart, fyEnd, rows, totals: { brought_forward: totBF, received: totRec, issued: totIss, balance: totBal } };
+}
+
+app.get('/api/report-summary', async (req, res) => {
+    try {
+        const { fiscal_year, category } = req.query;
+        const fy = parseInt(fiscal_year) || (new Date().getFullYear() + 543 + (new Date().getMonth() >= 9 ? 1 : 0));
+        const cat = (!category || category === 'ALL') ? null : category;
+        const orgId = getUserOrgId(req);
+
+        // ดึงชื่อหน่วยงาน
+        let orgName = '';
+        if (orgId !== null) {
+            const orgRow = await query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+            orgName = orgRow.rows.length > 0 ? orgRow.rows[0].name : '';
+        } else {
+            const settRow = await query("SELECT value FROM settings WHERE key='orgName' LIMIT 1");
+            orgName = settRow.rows.length > 0 ? settRow.rows[0].value : 'ระบบทะเบียนคุมวัสดุ';
+        }
+
+        // ดึงชื่อประเภท
+        let categoryLabel = 'รวมทุกประเภท';
+        if (cat) {
+            const catRow = await query('SELECT name FROM categories WHERE code = $1', [cat]);
+            if (catRow.rows.length > 0) categoryLabel = catRow.rows[0].name;
+        }
+
+        const { rows, totals } = await buildReportSummary(orgId, fy, cat);
+
+        res.json({ success: true, data: {
+            fiscal_year: fy,
+            org_name: orgName,
+            category_filter: categoryLabel,
+            items: rows,
+            totals
+        }});
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/report-summary/export', async (req, res) => {
+    try {
+        const { fiscal_year, category } = req.query;
+        const fy = parseInt(fiscal_year) || (new Date().getFullYear() + 543 + (new Date().getMonth() >= 9 ? 1 : 0));
+        const cat = (!category || category === 'ALL') ? null : category;
+        const orgId = getUserOrgId(req);
+
+        // ดึงชื่อหน่วยงาน
+        let orgName = '';
+        if (orgId !== null) {
+            const orgRow = await query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+            orgName = orgRow.rows.length > 0 ? orgRow.rows[0].name : '';
+        } else {
+            const settRow = await query("SELECT value FROM settings WHERE key='orgName' LIMIT 1");
+            orgName = settRow.rows.length > 0 ? settRow.rows[0].value : 'ระบบทะเบียนคุมวัสดุ';
+        }
+
+        let categoryLabel = 'รวมทุกประเภท';
+        if (cat) {
+            const catRow = await query('SELECT name FROM categories WHERE code = $1', [cat]);
+            if (catRow.rows.length > 0) categoryLabel = catRow.rows[0].name;
+        }
+
+        const { rows, totals } = await buildReportSummary(orgId, fy, cat);
+
+        // สร้าง Excel
+        const wb = new ExcelJS.Workbook();
+        const ws = wb.addWorksheet('รายงาน');
+
+        const thinBorder = { style: 'thin' };
+        const allBorders = { top: thinBorder, left: thinBorder, bottom: thinBorder, right: thinBorder };
+
+        // Column widths
+        ws.columns = [
+            { width: 7 },  // A ลำดับ
+            { width: 25 }, // B ประเภท
+            { width: 36 }, // C รายการ
+            { width: 12 }, // D หน่วยนับ
+            { width: 14 }, // E ยอดยกมา
+            { width: 12 }, // F รับเข้า
+            { width: 12 }, // G จ่ายออก
+            { width: 15 }, // H คงเหลือ
+            { width: 20 }, // I หมายเหตุ
+        ];
+
+        // Row 1: ชื่อรายงาน
+        const r1 = ws.getRow(1);
+        r1.height = 31;
+        ws.mergeCells('A1:I1');
+        const c1 = ws.getCell('A1');
+        c1.value = 'แบบรายงานรับจ่ายพัสดุประจำปีงบประมาณ';
+        c1.font = { name: 'TH SarabunPSK', size: 24, bold: true };
+        c1.alignment = { horizontal: 'center', vertical: 'middle' };
+
+        // Row 2: ชื่อหน่วยงาน
+        const r2 = ws.getRow(2);
+        r2.height = 26;
+        ws.mergeCells('A2:I2');
+        const c2 = ws.getCell('A2');
+        c2.value = orgName;
+        c2.font = { name: 'TH SarabunPSK', size: 20, bold: true };
+        c2.alignment = { horizontal: 'center', vertical: 'middle' };
+
+        // Row 3: รายงานการสำรวจ + ประเภท
+        const r3 = ws.getRow(3);
+        r3.height = 26;
+        ws.getCell('A3').value = 'รายงานการสำรวจ';
+        ws.getCell('A3').font = { name: 'TH SarabunPSK', size: 20, bold: true };
+        ws.getCell('C3').value = categoryLabel;
+        ws.getCell('C3').font = { name: 'TH SarabunPSK', size: 20, bold: true };
+
+        // Row 4: หัวตาราง
+        const r4 = ws.getRow(4);
+        r4.height = 22;
+        const headers = ['ลำดับ', 'ประเภท', 'รายการ', 'หน่วยนับ', 'ยอดยกมา', 'รับเข้า', 'จ่ายออก', 'คงเหลือ', 'หมายเหตุ'];
+        ['A','B','C','D','E','F','G','H','I'].forEach((col, i) => {
+            const cell = ws.getCell(`${col}4`);
+            cell.value = headers[i];
+            cell.font = { name: 'TH SarabunPSK', size: 16, bold: true };
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            cell.border = allBorders;
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+        });
+
+        // Data rows
+        const startRow = 5;
+        rows.forEach((item, idx) => {
+            const rn = ws.getRow(startRow + idx);
+            rn.height = 22;
+            const vals = [item.no, item.cat_name, item.name, item.unit,
+                          item.brought_forward, item.received, item.issued, item.balance, ''];
+            ['A','B','C','D','E','F','G','H','I'].forEach((col, i) => {
+                const cell = ws.getCell(`${col}${startRow + idx}`);
+                cell.value = vals[i];
+                cell.font = { name: 'TH SarabunPSK', size: 16 };
+                cell.border = allBorders;
+                cell.alignment = {
+                    horizontal: (i === 0 || i >= 4) ? 'center' : 'left',
+                    vertical: 'middle'
+                };
+            });
+        });
+
+        // แถวรวม
+        const totalRow = startRow + rows.length;
+        const rTotal = ws.getRow(totalRow);
+        rTotal.height = 22;
+        ws.mergeCells(`A${totalRow}:D${totalRow}`);
+        const cellMerge = ws.getCell(`A${totalRow}`);
+        cellMerge.value = 'รวมทั้งสิ้น';
+        cellMerge.font = { name: 'TH SarabunPSK', size: 16, bold: true };
+        cellMerge.alignment = { horizontal: 'center', vertical: 'middle' };
+        cellMerge.border = allBorders;
+        [['E', totals.brought_forward], ['F', totals.received], ['G', totals.issued], ['H', totals.balance]].forEach(([col, val]) => {
+            const cell = ws.getCell(`${col}${totalRow}`);
+            cell.value = val;
+            cell.font = { name: 'TH SarabunPSK', size: 16, bold: true };
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            cell.border = allBorders;
+        });
+        ws.getCell(`I${totalRow}`).border = allBorders;
+
+        // ส่งไฟล์
+        const safeYear = String(fy).replace(/[^0-9]/g, '');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`รายงานรับจ่ายพัสดุ_ปีงบ${safeYear}`)}.xlsx`);
+        await wb.xlsx.write(res);
+        res.end();
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

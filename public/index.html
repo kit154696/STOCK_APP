@@ -300,6 +300,9 @@
             <a href="#" class="menu-item" onclick="nav('report', this)">
                 <i class="fas fa-print"></i> รายงานคงเหลือ
             </a>
+            <a href="#" class="menu-item" id="menuAnnualReport" onclick="nav('annual-report', this)">
+                <i class="fas fa-exchange-alt"></i> รายงานรับ-จ่ายประจำปี
+            </a>
         </div>
         <div class="footer-menu">
             <div class="menu-section">จัดการข้อมูล</div>
@@ -635,6 +638,27 @@
                         </table>
                     </div>
                     <div id="auditPagination" style="display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap;"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== ANNUAL REPORT (รับ-จ่ายประจำปีงบประมาณ) ===== -->
+        <section id="annual-report" class="page-section">
+            <div class="card">
+                <div class="card-header" style="flex-wrap:wrap; gap:8px;">
+                    <h3><i class="fas fa-exchange-alt"></i> รายงานรับ-จ่ายพัสดุประจำปีงบประมาณ</h3>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <select id="arFiscalYear" style="padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-family:inherit;"></select>
+                        <select id="arCategory" style="padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-family:inherit;">
+                            <option value="ALL">รวมทุกประเภท</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="renderAnnualReport()"><i class="fas fa-search"></i> แสดงรายงาน</button>
+                        <button class="btn btn-secondary" onclick="exportAnnualReport()"><i class="fas fa-file-excel"></i> Export Excel</button>
+                        <button class="btn btn-secondary" onclick="printAnnualReport()"><i class="fas fa-print"></i> พิมพ์</button>
+                    </div>
+                </div>
+                <div class="card-body" id="annualReportContent">
+                    <div style="text-align:center; color:var(--text-muted); padding:40px;">เลือกปีงบประมาณแล้วกด "แสดงรายงาน"</div>
                 </div>
             </div>
         </section>
@@ -1225,6 +1249,7 @@
             if (pageId === 'ratelimit') renderRateLimit();
             if (pageId === 'autobackup') renderAutoBackups();
             if (pageId === 'orgs') renderOrgs();
+            if (pageId === 'annual-report') initAnnualReportFilters();
         }
 
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
@@ -1917,6 +1942,136 @@
         }
 
         // ============================================================
+        // ============================================================
+        // ANNUAL REPORT — รับ-จ่ายพัสดุประจำปีงบประมาณ
+        // ============================================================
+
+        async function initAnnualReportFilters() {
+            // ปีงบประมาณ dropdown 2567-2575
+            const sel = document.getElementById('arFiscalYear');
+            if (sel.options.length <= 1) { // โหลดครั้งเดียว
+                const now = new Date();
+                const currentFY = now.getFullYear() + 543 + (now.getMonth() >= 9 ? 1 : 0);
+                sel.innerHTML = '';
+                for (let y = 2567; y <= 2575; y++) {
+                    sel.innerHTML += `<option value="${y}" ${y === currentFY ? 'selected' : ''}>${y}</option>`;
+                }
+            }
+            // ประเภทวัสดุ (โหลดครั้งเดียว)
+            const catSel = document.getElementById('arCategory');
+            if (catSel.options.length <= 1) {
+                try {
+                    const res = await api('/categories');
+                    res.data.forEach(c => {
+                        catSel.innerHTML += `<option value="${c.code}">${c.name}</option>`;
+                    });
+                } catch(e) { /* ignore */ }
+            }
+        }
+
+        async function renderAnnualReport() {
+            const fy = document.getElementById('arFiscalYear').value;
+            const cat = document.getElementById('arCategory').value;
+            const content = document.getElementById('annualReportContent');
+            content.innerHTML = '<div style="text-align:center;padding:30px;"><i class="fas fa-spinner fa-spin"></i> กำลังโหลด...</div>';
+            try {
+                const qs = adminOrgParam(`/report-summary?fiscal_year=${fy}&category=${cat}`);
+                const res = await api(qs);
+                const d = res.data;
+                const orgNameDisplay = d.org_name || (currentUser && currentUser.org_name) || '';
+
+                let rows = '';
+                d.items.forEach(item => {
+                    rows += `<tr>
+                        <td style="text-align:center;">${item.no}</td>
+                        <td>${item.cat_name}</td>
+                        <td>${item.name}</td>
+                        <td style="text-align:center;">${item.unit}</td>
+                        <td style="text-align:center;">${item.brought_forward}</td>
+                        <td style="text-align:center;">${item.received}</td>
+                        <td style="text-align:center;">${item.issued}</td>
+                        <td style="text-align:center;font-weight:600;">${item.balance}</td>
+                        <td></td>
+                    </tr>`;
+                });
+
+                content.innerHTML = `
+                    <div id="annualReportPrint">
+                        <div style="text-align:center; font-size:1.25rem; font-weight:700; margin-bottom:4px;">
+                            แบบรายงานรับจ่ายพัสดุประจำปีงบประมาณ
+                        </div>
+                        <div style="text-align:center; font-size:1.1rem; font-weight:700; margin-bottom:8px;">
+                            ${orgNameDisplay}
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-weight:600;">
+                            <span>รายงานการสำรวจ</span>
+                            <span>${d.category_filter}</span>
+                        </div>
+                        <div style="overflow-x:auto;">
+                        <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+                            <thead>
+                                <tr style="background:#D9E1F2;">
+                                    <th style="${thStyle}">ลำดับ</th>
+                                    <th style="${thStyle}">ประเภท</th>
+                                    <th style="${thStyle}">รายการ</th>
+                                    <th style="${thStyle}">หน่วยนับ</th>
+                                    <th style="${thStyle}">ยอดยกมา</th>
+                                    <th style="${thStyle}">รับเข้า</th>
+                                    <th style="${thStyle}">จ่ายออก</th>
+                                    <th style="${thStyle}">คงเหลือ</th>
+                                    <th style="${thStyle}">หมายเหตุ</th>
+                                </tr>
+                            </thead>
+                            <tbody>${rows}</tbody>
+                            <tfoot>
+                                <tr style="font-weight:700; background:#F5F5F5;">
+                                    <td colspan="4" style="${tdStyle} text-align:center;">รวมทั้งสิ้น</td>
+                                    <td style="${tdStyle} text-align:center;">${d.totals.brought_forward}</td>
+                                    <td style="${tdStyle} text-align:center;">${d.totals.received}</td>
+                                    <td style="${tdStyle} text-align:center;">${d.totals.issued}</td>
+                                    <td style="${tdStyle} text-align:center;">${d.totals.balance}</td>
+                                    <td style="${tdStyle}"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        </div>
+                    </div>`;
+            } catch (e) {
+                content.innerHTML = `<div style="color:red;padding:20px;">${e.message}</div>`;
+            }
+        }
+
+        const thStyle = 'border:1px solid #999; padding:6px 8px; text-align:center; font-weight:700;';
+        const tdStyle = 'border:1px solid #bbb; padding:5px 8px;';
+
+        function exportAnnualReport() {
+            const fy = document.getElementById('arFiscalYear').value;
+            const cat = document.getElementById('arCategory').value;
+            const qs = adminOrgParam(`/report-summary/export?fiscal_year=${fy}&category=${cat}`);
+            window.location.href = `/api${qs}`;
+        }
+
+        function printAnnualReport() {
+            const content = document.getElementById('annualReportPrint');
+            if (!content) return alert('กรุณาแสดงรายงานก่อน');
+            const w = window.open('', '_blank', 'width=900,height=700');
+            w.document.write(`<!DOCTYPE html><html><head>
+                <meta charset="UTF-8">
+                <title>แบบรายงานรับจ่ายพัสดุประจำปีงบประมาณ</title>
+                <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+                <style>
+                    body { font-family:'Sarabun',sans-serif; margin:20mm; font-size:14pt; }
+                    table { width:100%; border-collapse:collapse; font-size:14pt; }
+                    th,td { border:1px solid #999; padding:5px 8px; }
+                    th { background:#D9E1F2; text-align:center; font-weight:700; }
+                    @media print { @page { size:A4 landscape; margin:15mm; } }
+                </style>
+            </head><body>${content.innerHTML}</body></html>`);
+            w.document.close();
+            w.focus();
+            setTimeout(() => w.print(), 500);
+        }
+
         // ORGANIZATIONS MANAGEMENT (Admin only)
         // ============================================================
         async function renderOrgs() {

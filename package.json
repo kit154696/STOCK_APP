@@ -1,7 +1,7 @@
 {
   "name": "sao-stock-manager",
   "version": "7.0.0",
-  "description": "ระบบบัญชีคุมวัสดุ อปท. (ว.1095) - PostgreSQL + Railway Edition",
+  "description": "ระบบทะเบียนคุมวัสดุ - PostgreSQL + Railway Edition",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,14 +12,15 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "pg": "^8.13.0",
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^9.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "bcryptjs": "^2.4.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.5.0",
     "express-session": "^1.18.0",
-    "connect-pg-simple": "^9.0.1",
     "helmet": "^8.0.0",
-    "express-rate-limit": "^7.5.0"
+    "pg": "^8.13.0"
   }
 }
