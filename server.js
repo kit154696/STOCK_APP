@@ -823,9 +823,10 @@ async function buildReportSummary(orgId, fiscalYearBE, cat) {
     itemSql += ' ORDER BY cat_code, code';
     const itemsRes = await query(itemSql, itemParams);
 
-    // org filter condition สำหรับ transactions
-    const orgTxCond = orgId !== null ? ` AND t.org_id = $${pi++}` : '';
-    const orgTxParam = orgId !== null ? [orgId] : [];
+    // org filter condition สำหรับ transactions (แยก index ต่อ query เพราะ param count ต่างกัน)
+    const orgTxParam  = orgId !== null ? [orgId] : [];
+    const bfOrgCond   = orgId !== null ? ' AND t.org_id = $2' : '';
+    const inFyOrgCond = orgId !== null ? ' AND t.org_id = $3' : '';
 
     // ยอดยกมา: ก่อน fyStart
     const bfRes = await query(`
@@ -834,7 +835,7 @@ async function buildReportSummary(orgId, fiscalYearBE, cat) {
                COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as out_bf
         FROM transaction_lines tl
         JOIN transactions t ON t.id = tl.tx_id
-        WHERE t.date < $1${orgTxCond}
+        WHERE t.date < $1${bfOrgCond}
         GROUP BY tl.item_id
     `, [fyStart, ...orgTxParam]);
 
@@ -845,7 +846,7 @@ async function buildReportSummary(orgId, fiscalYearBE, cat) {
                COALESCE(SUM(CASE WHEN t.type='OUT' THEN tl.qty ELSE 0 END), 0) as issued
         FROM transaction_lines tl
         JOIN transactions t ON t.id = tl.tx_id
-        WHERE t.date >= $1 AND t.date <= $2${orgTxCond}
+        WHERE t.date >= $1 AND t.date <= $2${inFyOrgCond}
         GROUP BY tl.item_id
     `, [fyStart, fyEnd, ...orgTxParam]);
 
